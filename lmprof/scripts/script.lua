@@ -11,7 +11,7 @@
 @LICENSE
     See Copyright Notice in lmprof_lib.h
 --]]
-lmprof = require('lmprof') -- @NOTE: LUA_PATH
+lmprof = lmprof--require('lmprof') or lmprof -- @NOTE: LUA_PATH
 
 --[[ Default arguments --]]
 function PrintUsage(errorMessage)
@@ -240,7 +240,7 @@ elseif options:Bool("json", "j", false) or trace_mode then
     if options:Bool("output_string", "", false) then
         print(result)
     else
-        json = require('dkjson')
+        json = require('lmprof/scripts/dkjson')
         print(json.encode(result.records, {
             level = 0, indent = true,
             keyorder = { "cat", "name", "ph", "pid", "tid", "ts", "args",},
@@ -249,7 +249,7 @@ elseif options:Bool("json", "j", false) or trace_mode then
 elseif options:Bool("output_string", "", false) then
     print(result)
 else
-    local Graph = require('graph')
+    local Graph = require('lmprof/scripts/graph')
 
     result.header.sort = options:String("sort", "", nil)
     result.header.csv = options:Bool("csv", "", false)

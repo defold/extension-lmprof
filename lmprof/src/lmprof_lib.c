@@ -6,7 +6,16 @@
 
 #include <stdint.h>
 #include <inttypes.h>
-
+#define LUA_LIB
+#define LIB_NAME "lmprof"
+#define MODULE_NAME "lmprof"
+// include the Defold SDK
+#include <dmsdk/sdk.h>
+extern "C" {
+  #include <dmsdk/lua/lua.h>
+  // #include <dmsdk/lua/lauxlib.h>
+  // #include <dmsdk/lua/lualib.h>
+}
 #include "lmprof_conf.h"
 
 #include "collections/lmprof_hash.h"
@@ -146,7 +155,7 @@ static LUA_INLINE void check_stack_mismatch(lua_State *L, lmprof_State *st, lmpr
 /* @TODO: Additional logic in cases of coroutine.yield/resume. */
 static LUA_INLINE lmprof_State *graph_prehook(lua_State *L) {
   lmprof_State *st = lmprof_singleton(L);
-
+ 
   /*
   ** Profiler has stopped recording since it inherited its debughook.
   **
@@ -158,7 +167,7 @@ static LUA_INLINE lmprof_State *graph_prehook(lua_State *L) {
       /* Invalid state */
       || BITFIELD_TEST(st->state, LMPROF_STATE_ERROR)
       || !BITFIELD_TEST(st->state, LMPROF_STATE_RUNNING)) {
-    lua_sethook(L, l_nullptr, 0, 0); /* reset hook */
+        lua_sethook(L, l_nullptr, 0, 0); /* reset hook */
     return l_nullptr;
   }
   /*
@@ -196,7 +205,6 @@ static LUA_INLINE lmprof_State *graph_prehook(lua_State *L) {
       PROFILE_ADJUST_OVERHEAD(L, st);
     }
   }
-
   return st;
 }
 
@@ -283,23 +291,23 @@ static void graph_instrument(lua_State *L, lua_Debug *ar) {
   if (st == l_nullptr) {
     return;
   }
-
   stack = st->thread.call_stack;
+  if (!stack) return;
   switch (ar->event) {
 #if defined(LUA_HOOKTAILCALL)
     case LUA_HOOKTAILCALL:
 #endif
-    case LUA_HOOKCALL: {
-      lua_CFunction result = l_nullptr;
-      const lu_addr fid = lmprof_record_id(L, ar, BITFIELD_TEST(st->conf, LMPROF_OPT_GC_DISABLE), &result);
-      if (!PROFILE_IS_STOP(result)) {
-        const lmprof_StackInst *parent = lmprof_stack_peek(stack);
-        const lu_addr pid = (parent == l_nullptr) ? LMPROF_RECORD_ID_ROOT : P_ID(st, parent->graph.record);
-        const int pid_lastLine = (parent == l_nullptr) ? 0 : parent->last_line;
+case LUA_HOOKCALL: {
+  lua_CFunction result = l_nullptr;
+  const lu_addr fid = lmprof_record_id(L, ar, BITFIELD_TEST(st->conf, LMPROF_OPT_GC_DISABLE), &result);
+  if (!PROFILE_IS_STOP(result)) {
+    const lmprof_StackInst *parent = lmprof_stack_peek(stack);
+    const lu_addr pid = (parent == l_nullptr) ? LMPROF_RECORD_ID_ROOT : P_ID(st, parent->graph.record);
+    const int pid_lastLine = (parent == l_nullptr) ? 0 : parent->last_line;
 
-        lmprof_Record *record = lmprof_fetch_record(L, st, ar, fid, pid, pid_lastLine);
-        lmprof_StackInst *inst = lmprof_stack_measured_push(stack, record, &st->thread.r.s, LUA_IS_TAILCALL(ar));
-        if (inst == l_nullptr) {
+    lmprof_Record *record = lmprof_fetch_record(L, st, ar, fid, pid, pid_lastLine);
+    lmprof_StackInst *inst = lmprof_stack_measured_push(stack, record, &st->thread.r.s, LUA_IS_TAILCALL(ar));
+    if (inst == l_nullptr) {
           lmprof_error(L, st, "profiler stack overflow");
           return;
         }
@@ -314,7 +322,7 @@ static void graph_instrument(lua_State *L, lua_Debug *ar) {
 #if defined(LUA_HOOKTAILRET)
     case LUA_HOOKTAILRET:
 #endif
-    case LUA_HOOKRET: {
+case LUA_HOOKRET: {
       lu_addr fid = 0, tail_return = 0;
       lmprof_StackInst *inst = (stack->head > 1) ? lmprof_stack_measured_pop(stack, &st->thread.r.s) : l_nullptr;
       if (!(tail_return = PROFILE_TAIL_EVENT(ar, inst))) {
@@ -751,7 +759,6 @@ LUA_API int lmprof_initialize_only_hooks(lua_State *L, lmprof_State *st, int idx
   else {
     return lmprof_error(L, st, "Unknown profile mode: %d", l_cast(int, st->mode));
   }
-
   /* lmprof_check_can_profile(L); Handled by root function. */
   switch (lmprof_initialize_profiler(L, st, abs_idx, call, memory)) {
     case LMPROF_STARTUP_ERROR:
@@ -762,7 +769,7 @@ LUA_API int lmprof_initialize_only_hooks(lua_State *L, lmprof_State *st, int idx
       return luaL_error(L, "could not register profiler singleton");
     default:
       break;
-  }
+    }
   return 1;
 }
 
@@ -990,7 +997,6 @@ LUA_API int lmprof_initialize_profiler(lua_State *L, lmprof_State *st, int idx, 
     TraceEventTimeline *list = l_pcast(TraceEventTimeline *, st->i.trace.arg);
     list->baseTime = st->thread.r.s.time;
   }
-
   /*
   ** LUA_GCISRUNNING was introduced in Lua 52. Therefore for previous Lua
   ** versions the garbage collector will be forced-stopped and forced-restarted
@@ -1004,7 +1010,6 @@ LUA_API int lmprof_initialize_profiler(lua_State *L, lmprof_State *st, int idx, 
     BITFIELD_SET(st->state, LMPROF_STATE_GC_WAS_RUNNING);
     lua_gc(L, LUA_GCSTOP, 0);
   }
-
   if (fhook != l_nullptr) {
     int line_count = 0;
 
@@ -1037,18 +1042,16 @@ LUA_API int lmprof_initialize_profiler(lua_State *L, lmprof_State *st, int idx, 
     st->hook.l_hook = fhook;
     st->hook.flags = (fhook == l_nullptr) ? 0 : flags;
     st->hook.line_count = (fhook == l_nullptr) ? 0 : line_count;
-
     if (BITFIELD_TEST(st->conf, LMPROF_OPT_GC_COUNT_INIT)
         && !BITFIELD_TEST(st->conf, LMPROF_OPT_TRACE_LAYOUT_SPLIT)) {
       const lu_size size = (l_cast(lu_size, lua_gc(L, LUA_GCCOUNT, 0)) << 10) + lua_gc(L, LUA_GCCOUNTB, 0);
       st->thread.r.s.allocated = size;
     }
-
     /* For all reachable coroutines: initialize their profiler hooks */
     lmprof_initialize_thread(L, st, l_nullptr);
     if (!BITFIELD_TEST(st->mode, LMPROF_MODE_SINGLE_THREAD)) {
 #if defined(LMPROF_BUILTIN)
-  #if LUA_VERSION_NUM < 502
+#if LUA_VERSION_NUM < 502
       EACH_THREAD(G(L)->rootgc, lmprof_initialize_thread, st, L);
   #else
       EACH_THREAD(G(L)->allgc, lmprof_initialize_thread, st, L);
@@ -1058,11 +1061,9 @@ LUA_API int lmprof_initialize_profiler(lua_State *L, lmprof_State *st, int idx, 
 #endif
     }
   }
-
   if (BITFIELD_TEST(st->mode, LMPROF_MODE_MEMORY)) {
     lua_setallocf(L, ahook, l_pcast(void *, st));
   }
-
   BITFIELD_CLEAR(st->state, LMPROF_STATE_SETTING_UP);
   return LMPROF_STARTUP_OK;
 }
@@ -1635,3 +1636,60 @@ LUAMOD_API int luaopen_lmprof(lua_State *L) {
 }
 #endif
 /* }================================================================== */
+
+
+
+// static void LuaInit(lua_State* L)
+// {
+//     int top = lua_gettop(L);
+// 
+//     // Register lua names
+//     luaL_register(L, MODULE_NAME, lmproflib);
+// 
+//     lua_pop(L, 1);
+//     assert(top == lua_gettop(L));
+// }
+
+dmExtension::Result AppInitializeMyExtension(dmExtension::AppParams* params)
+{
+    dmLogInfo("AppInitializeMyExtension\n");
+    return dmExtension::RESULT_OK;
+}
+
+dmExtension::Result InitializeMyExtension(dmExtension::Params* params)
+{
+    // Init Lua
+    // LuaInit(params->m_L);
+    luaopen_lmprof(params->m_L);
+    lua_pop(params->m_L, 1);
+    dmLogInfo("Registered %s Extension\n", MODULE_NAME);
+    return dmExtension::RESULT_OK;
+}
+
+dmExtension::Result AppFinalizeMyExtension(dmExtension::AppParams* params)
+{
+    dmLogInfo("AppFinalizeMyExtension\n");
+    return dmExtension::RESULT_OK;
+}
+
+dmExtension::Result FinalizeMyExtension(dmExtension::Params* params)
+{
+    dmLogInfo("FinalizeMyExtension\n");
+    return dmExtension::RESULT_OK;
+}
+
+// dmExtension::Result OnUpdateMyExtension(dmExtension::Params* params)
+// {
+//     dmLogInfo("OnUpdateMyExtension\n");
+//     return dmExtension::RESULT_OK;
+// }
+
+
+// Defold SDK uses a macro for setting up extension entry points:
+//
+// DM_DECLARE_EXTENSION(symbol, name, app_init, app_final, init, update, on_event, final)
+
+// MyExtension is the C++ symbol that holds all relevant extension data.
+// It must match the name field in the `ext.manifest`
+DM_DECLARE_EXTENSION(lmprof, LIB_NAME, AppInitializeMyExtension, AppFinalizeMyExtension, InitializeMyExtension, NULL, NULL, FinalizeMyExtension)
+

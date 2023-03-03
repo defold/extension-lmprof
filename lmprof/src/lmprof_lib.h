@@ -5,8 +5,13 @@
 #ifndef lmprof_lib_h
 #define lmprof_lib_h
 
-#include <lua.h>
+extern "C" {
+  #include <dmsdk/lua/lua.h>
+  // #include <dmsdk/lua/lauxlib.h>
+  // #include <dmsdk/lua/lualib.h>
+}
 
+#define LMPROF_FILE_API
 #define LMPROF_NAME "lmprof"
 #define LMPROF_VERSION "lmprof 0.1.14"
 #define LMPROF_COPYRIGHT "Copyright (C) 2021, Gottfried Leibniz"
@@ -331,3 +336,4 @@ LUALIB_API int lchrome_trace_event_endframe(lua_State *L);
 ******************************************************************************/
 
 #endif
+

@@ -168,7 +168,7 @@ static const char *getfuncinfo(lua_State *L, lua_Debug *ar, size_t *len) {
   }
   else {
     lua_pushliteral(L, LMPROF_RECORD_NAME_UNKNOWN);
-    lua_pushfstring(L, " (%s:%d)", ar->short_src, ar->linedefined, ar->currentline);
+    lua_pushfstring(L, " (%s:%d:%i)", ar->short_src, ar->linedefined, ar->currentline);
   }
 
   lua_concat(L, lua_gettop(L) - top);

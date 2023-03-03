@@ -10,7 +10,7 @@
 **      configuration, and persisting data, i.e., throwing things into the
 **      registry table for the duration of a profile.
 */
-#define LUA_LIB
+
 
 #include <string.h>
 
@@ -1444,7 +1444,7 @@ LUALIB_API int lmprof_get_timeunit(lua_State *L) {
 
 LUALIB_API int lmprof_get_has_io(lua_State *L) {
 #if defined(LMPROF_FILE_API)
-  lua_pushboolean(L, 1);
+lua_pushboolean(L, 1);LMPROF_FILE_API
   lua_pushboolean(L, 1);
 #else
   lua_pushboolean(L, 0);

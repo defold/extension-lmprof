@@ -1168,8 +1168,8 @@ static int __eventUpdateCounters(lua_State *L, lmprof_Report *R, const TraceEven
     luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("UpdateCounters")));
     luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("I")));
     luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("s", JSON_STRING("g")));
-    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("pid", LUA_INT_FORMAT), event->call.proc.pid);
-    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("tid", LUA_INT_FORMAT), event->call.proc.tid);
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("pid", LUA_INT_FORMAT), (int)event->call.proc.pid);
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("tid", LUA_INT_FORMAT), (int)event->call.proc.tid);
     luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("ts", "%s"), ts_str);
     luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("args", JSON_OPEN_OBJ));
     luaL_addliteral(b, JSON_ASSIGN("data", JSON_OPEN_OBJ));

@@ -598,7 +598,7 @@ function json.decode (str, pos, nullval, ...)
 end
 
 function json.use_lpeg ()
-  local g = require ("lpeg")
+  -- local g = require ("lpeg")
 
   if g.version() == "0.11" then
     error "due to a bug in LPeg 0.11, it cannot be used for JSON matching"
@@ -701,7 +701,7 @@ function json.use_lpeg ()
   -- use this function only once:
   json.use_lpeg = function () return json end
 
-  json.using_lpeg = true
+  json.using_lpeg = false
 
   return json -- so you can get the module using json = require "dkjson".use_lpeg()
 end

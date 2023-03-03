@@ -1,0 +1,64 @@
+function init(self)
+	print("Init ", lmprof.has_io())
+
+	profiler = lmprof.create("instrument", "memory", "trace")
+	--:set_option("load_stack", true)
+	:set_option("mismatch", true)
+	:set_option("compress_graph", true)
+	:set_option("micro", true)
+	:calibrate()
+	
+	profiler:start()
+	profiler:begin_frame()
+	self.tbl = {}
+	local tb = {}
+	for i = 1, 1000 do
+		tb[#tb + 1] = math.random()
+	end
+	
+	timer.delay(1, false, function()
+		local path = ""
+		local filename = "pr-data.json"
+		local fullpath = path..filename
+		if not profiler:stop(fullpath) then
+			error("Failure!")
+		end
+		print("Result of memory profiling has saved on disk.")
+		
+		local report_postprocess = require("lmprof.scripts.report_postprocess")
+		report_postprocess.filter_out_lines_wit(fullpath, "chrome.json", "%? %[C%]") -- remove "? [C]"
+		os.exit()
+	end)
+
+	print("Init done") 
+end
+
+function final(self)
+	-- Add finalization code here
+	-- Remove this function if not needed
+	-- luaprofiler.stop()
+end
+
+function update(self, dt)
+	local tb = self.tbl
+	for i = 1, 1000 do
+		tb[#tb + 1] = math.random()
+	end
+	profiler:end_frame()
+	profiler:begin_frame()
+end
+
+function on_message(self, message_id, message, sender)
+	-- Add message-handling code here
+	-- Remove this function if not needed
+end
+
+function on_input(self, action_id, action)
+	-- Add input-handling code here
+	-- Remove this function if not needed
+end
+
+function on_reload(self)
+	-- Add reload-handling code here
+	-- Remove this function if not needed
+end

@@ -5,6 +5,7 @@
 */
 #ifndef lmprof_report_h
 #define lmprof_report_h
+#define LMPROF_FILE_API
 
 #include <stdio.h>
 

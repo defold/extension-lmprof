@@ -27,9 +27,11 @@
 #endif
 
 LUA_EXTERN_BEGIN
-#include <lua.h>
-#include <luaconf.h>
-#include <lauxlib.h>
+extern "C" {
+  #include <dmsdk/lua/lua.h>
+  #include <dmsdk/lua/lauxlib.h>
+  // #include <dmsdk/lua/lualib.h>
+}
 LUA_EXTERN_END
 
 /* Compiler-specific forceinline definition */
