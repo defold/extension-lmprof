@@ -28,7 +28,7 @@ profiler = lmprof.create("instrument", "memory", "trace")
 	print("Result of memory profiling has saved on disk.")
 
 local report_postprocess = require("lmprof.scripts.report_postprocess")
-	report_postprocess.filter_out_lines_wit(fullpath, "chrome.json", "%? %[C%]") -- remove "? [C]"
+	report_postprocess.filter_out_lines_wit("mem.json", "chrome.json", "%? %[C%]") -- remove "? [C]"
 	os.exit()
 
 
