@@ -11,31 +11,40 @@ To use this library in your Defold project, add the needed version URL to your `
 ## Example
 
 ```lua
-profiler = lmprof.create("instrument", "memory", "trace")
-	:set_option("mismatch", true)
-	:set_option("compress_graph", true)
-	:set_option("micro", true)
-	:calibrate()
+lmprof.set_option("gc_count", true)
+lmprof.set_option("mismatch", true)
+lmprof.set_option("micro", true)
+lmprof.set_option("compress_graph", true)
+lmprof.set_option("compress", true)
+lmprof.set_option("threshold", 100) -- 1000 microseconds = 1 ms
+_G.profilerlmprof = lmprof.create("instrument", "memory", "trace"):calibrate()
 
-	profiler:start()
-	profiler:begin_frame()
+_G.profilerlmprof:start()
+_G.profilerlmprof:begin_frame()
 
-	do_something_mem_heavy()
+do_something_mem_heavy()
 
-	if not profiler:stop("mem.json") then
-		error("Failure!")
-	end
-	print("Result of memory profiling has saved on disk.")
+if not _G.profilerlmprof:stop("mem.json") then
+	error("Failure!")
+end
+print("Result of memory profiling has saved on disk.")
 
 local report_postprocess = require("lmprof.scripts.report_postprocess")
-	report_postprocess.filter_out_lines_wit("mem.json", "chrome.json", "%? %[C%]") -- remove "? [C]"
-	os.exit()
+report_postprocess.filter_out_lines_with(fullpath, "chrome.json", {
+    -- "%? %[C%]", -- remove "? [C]"
+    -- "%(for generator%) %[C%]", -- remove "(for generator) [C]"
+    -- "self %[C%]" -- remove "self [C]"
+    "%[C%]" -- remove all "[C]" callse
+})
+os.exit()
 
 
 
 function update(self, dt)
-	profiler:end_frame()
-	profiler:begin_frame()
+    if _G.profilerlmprof:get_state("running") then
+        _G.profilerlmprof:end_frame()
+        _G.profilerlmprof:begin_frame()
+    end
 end
 ```
 
