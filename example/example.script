@@ -49,10 +49,14 @@ function final(self)
     -- Remove this function if not needed
 end
 
+local function tail()
+    return math.random()
+end
+
 function update(self, dt)
     local tb = self.tbl
     for i = 1, 1000 do
-        tb[#tb + 1] = math.random()
+        tb[#tb + 1] = tail()
     end
     if _G.profilerlmprof:get_state("running") then
         _G.profilerlmprof:end_frame()
