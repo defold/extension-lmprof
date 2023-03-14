@@ -18,7 +18,7 @@
 ** as the profiler can be configured to create one stack instance per coroutine.
 */
 #if !defined(LMPROF_MAXSTACK)
-#define LMPROF_MAXSTACK 1024 /* (LUAI_MAXSTACK >> 8) */
+#define LMPROF_MAXSTACK 1024 * 64/* (LUAI_MAXSTACK >> 8) */
 #endif
 
 typedef struct lmprof_StackInst {
