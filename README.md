@@ -2,6 +2,8 @@
 
 [Original readme](https://github.com/defold/extension-lmprof/blob/master/ORIGINAL_README.md)
 
+Vanilla Lua 5.1 version is availible here: https://github.com/defold/extension-lmprof/tree/lua-5.1
+
 ## Installation
 To use this library in your Defold project, add the needed version URL to your `game.project` dependencies from [Releases](https://github.com/defold/extension-lmprof/releases)
 
