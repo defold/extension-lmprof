@@ -18,7 +18,7 @@ end
 
 function init(self)
     print("Init ", lmprof.has_io())
-
+    
     lmprof.set_option("gc_count", true)
     lmprof.set_option("mismatch", true)
     lmprof.set_option("micro", true)

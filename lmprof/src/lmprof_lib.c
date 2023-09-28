@@ -24,6 +24,7 @@ extern "C" {
 #include "lmprof.h"
 #include "lmprof_report.h"
 #include "lmprof_lib.h"
+#include "script_bitop.h"
 
 extern const char *const lmprof_mode_strings[];
 extern const uint32_t lmprof_mode_codes[];
