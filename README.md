@@ -2,6 +2,8 @@
 
 [Original readme](https://github.com/defold/extension-lmprof/blob/master/ORIGINAL_README.md)
 
+Vanilla Lua 5.1 version is availible here: https://github.com/defold/extension-lmprof/tree/lua-5.1
+
 ## Installation
 To use this library in your Defold project, add the needed version URL to your `game.project` dependencies from [Releases](https://github.com/defold/extension-lmprof/releases)
 
@@ -10,43 +12,10 @@ To use this library in your Defold project, add the needed version URL to your `
 
 ## Example
 
-```lua
-lmprof.set_option("gc_count", true)
-lmprof.set_option("mismatch", true)
-lmprof.set_option("micro", true)
-lmprof.set_option("compress_graph", true)
-lmprof.set_option("compress", true)
-lmprof.set_option("threshold", 100) -- 1000 microseconds = 1 ms
-_G.profilerlmprof = lmprof.create("instrument", "memory", "trace"):calibrate()
+Add `lmprof.script` component to your main collection.
+Specify properties:
+<img width="884" alt="image" src="https://github.com/defold/extension-lmprof/assets/2209596/73317193-b21a-4db8-b30f-111fdfb635f2">
 
-_G.profilerlmprof:start()
-_G.profilerlmprof:begin_frame()
-
-do_something_mem_heavy()
-
-if not _G.profilerlmprof:stop("mem.json") then
-	error("Failure!")
-end
-print("Result of memory profiling has saved on disk.")
-
-local report_postprocess = require("lmprof.scripts.report_postprocess")
-report_postprocess.filter_out_lines_with(fullpath, "chrome.json", {
-    -- "%? %[C%]", -- remove "? [C]"
-    -- "%(for generator%) %[C%]", -- remove "(for generator) [C]"
-    -- "self %[C%]" -- remove "self [C]"
-    "%[C%]" -- remove all "[C]" callse
-})
-os.exit()
-
-
-
-function update(self, dt)
-    if _G.profilerlmprof:get_state("running") then
-        _G.profilerlmprof:end_frame()
-        _G.profilerlmprof:begin_frame()
-    end
-end
-```
 
 ## Viewer
 

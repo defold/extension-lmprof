@@ -1,3 +1,7 @@
+key_trigger {
+  input: KEY_R
+  action: "recod_lmprof"
+}
 mouse_trigger {
   input: MOUSE_BUTTON_1
   action: "touch"
