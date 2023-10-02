@@ -179,9 +179,10 @@ static LARGE_INTEGER _winQuery;
   #error "A nanosecond resolution clock is not available."
 #endif
 
+
 #if defined(_MSC_VER) && defined(_M_X64)
   #include <intrin.h>
-#elif defined(__GNUC__) && defined(__has_include) && __has_include(<x86intrin.h>)
+#elif defined(__GNUC__) && defined(__has_include) && __has_include(<x86intrin.h>) && !defined(__aarch64__)
   #include <x86intrin.h>
 #else
   #undef LUA_SYS_RDTSC
