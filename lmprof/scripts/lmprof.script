@@ -26,7 +26,7 @@ function on_input(self, action_id, action)
                 end)
             end
         else
-            timer.cancel(self.timer)
+            if self.timer then timer.cancel(self.timer) end
             self.started = false
             lmprof_helper.stop()
             if self.exit_when_finish_profiling then
