@@ -37,6 +37,9 @@ for obj in data:
 # Sort the dictionary by count in descending order
 sorted_dict = {k: v for k, v in sorted(count_dict.items(), key=lambda item: item[1], reverse=True)}
 
-# Print each field count, tab, and name on its own line
-for field_name, count in sorted_dict.items():
-    print(f"{count}\t{field_name}\t{format(time_dict[field_name] * 0.001, '.2f')}\tms")
+with open('lprof_stat.csv','w') as file:
+    # Print each field count, tab, and name on its own line
+    for field_name, count in sorted_dict.items():
+        print(f"{count}\t{field_name}\t{format(time_dict[field_name] * 0.001, '.2f')}\tms")
+        
+        file.write(f"{count},{field_name.replace(',', ' comma')},{format(time_dict[field_name] * 0.001, '.2f')}\n")
