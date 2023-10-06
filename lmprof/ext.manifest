@@ -12,5 +12,5 @@ platforms:
       libs: [lua]
   win32:
     context:
-      excludeLibs: [luajit-5.1]
-      libs: [lua]
+      excludeLibs: [libluajit-5.1]
+      libs: [liblua]
