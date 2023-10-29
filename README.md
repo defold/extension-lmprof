@@ -31,5 +31,10 @@ Specify properties:
 
 <img width="1123" alt="image" src="https://user-images.githubusercontent.com/2209596/222744110-456458bc-d644-4972-8831-a4c35133bda4.png">
 
+Also, use [stat.py](https://github.com/defold/extension-lmprof/blob/master/stat.py) to see calls statistics.
+
+>stat.py my.json
+
+
 ---
 If you have any issues, questions or suggestions please [create an issue](https://github.com/defold/extension-lmprof/issues)
