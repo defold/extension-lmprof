@@ -7,6 +7,9 @@ local lmprof_helper = require("lmprof.scripts.lmprof_helper")
 function init(self)
     msg.post(".", "acquire_input_focus")
     lmprof_helper.init()
+    if debug.gethook() ~= nil then
+        error("Run game without debugger using cmd/ctrl+B instead of F5")
+    end
 end
 
 function update(self, dt)
