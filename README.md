@@ -35,6 +35,5 @@ Also, use [stat.py](https://github.com/defold/extension-lmprof/blob/master/stat.
 
 >stat.py my.json
 
-
 ---
 If you have any issues, questions or suggestions please [create an issue](https://github.com/defold/extension-lmprof/issues)
