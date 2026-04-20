@@ -453,8 +453,8 @@ static LUA_INLINE int traceevent_clear_stack(lua_State *L, lmprof_State *st) {
     lmprof_EventProcess thread = st->thread.r.proc;
     thread.tid = stack->thread_identifier;
 
-    for (i = 0; i < stack->head; ++i) { /* @TODO improve error propagation */
-      lmprof_StackInst *inst = &stack->stack[i];
+    for (i = stack->head; i > 0; --i) { /* @TODO improve error propagation */
+      lmprof_StackInst *inst = &stack->stack[i - 1];
       if (!traceevent_scope(L, st, inst, &unit, 0))
         return 0;
     }
@@ -786,7 +786,10 @@ static void pop_remaining_stacks(lua_State *L, lmprof_State *st) {
     /* FALLTHROUGH */
   }
   else if (BITFIELD_TEST(st->mode, LMPROF_CALLBACK_MASK)) {
-    /* FALLTHROUGH */
+    if (BITFIELD_TEST(st->mode, LMPROF_MODE_TRACE) && st->thread.call_stack != l_nullptr) {
+      st->thread.r.s.time = LMPROF_TIME(st);
+      traceevent_clear_stack(L, st);
+    }
   }
   else if (BITFIELD_TEST(st->mode, LMPROF_MODE_INSTRUMENT | LMPROF_MODE_MEMORY | LMPROF_MODE_SAMPLE)) {
     st->thread.r.s.time = LMPROF_TIME(st);
@@ -1693,4 +1696,3 @@ dmExtension::Result FinalizeMyExtension(dmExtension::Params* params)
 // MyExtension is the C++ symbol that holds all relevant extension data.
 // It must match the name field in the `ext.manifest`
 DM_DECLARE_EXTENSION(lmprof, LIB_NAME, AppInitializeMyExtension, AppFinalizeMyExtension, InitializeMyExtension, NULL, NULL, FinalizeMyExtension)
-

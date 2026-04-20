@@ -37,8 +37,8 @@
 #define TRACE_EVENT_COUNTER_FREQ 20 /* Default UpdateCounters output frequency */
 #define TRACE_EVENT_DEFAULT_PAGE_LIMIT 0 /* Maximum amount of pages in bytes (zero = infinite) */
 #define TRACE_EVENT_DEFAULT_THRESHOLD 1 /* Default compression threshold: microseconds */
-#define TRACE_EVENT_DEFAULT_NAME "" /* Default frame/FADE name */
-#define TRACE_EVENT_DEFAULT_URL "" /* Default frame/FADE url */
+#define TRACE_EVENT_DEFAULT_NAME "Defold lmprof" /* Default frame/FADE name */
+#define TRACE_EVENT_DEFAULT_URL "https://lmprof.defold/" /* Default frame/FADE url */
 
 /*
 @@ LMPROF_BUILTIN: When enabled include/expose internal Lua headers lobject.h,
