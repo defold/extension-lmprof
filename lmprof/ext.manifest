@@ -1,13 +1,2 @@
 # https://github.com/citizenfx/lmprof
 name: "lmprof"
-
-platforms:
-  osx:
-    context:
-      excludeLibs: [luajit-5.1]
-  linux:
-    context:
-      excludeLibs: [luajit-5.1]
-  win32:
-    context:
-      excludeLibs: [libluajit-5.1]
