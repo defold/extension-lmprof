@@ -266,8 +266,8 @@ LUA_API int lmprof_initialize_profiler(lua_State *L, lmprof_State *st, int idx, 
 ** until cleanup/reporting has finished.
 *
 ** 'pop_remaining': pop all remaining stack instances from all registered
-**    profiler stacks. Note, this is not supported for the TraceEvent API as the
-**    'events' are useless, e.g., 'main chunk', '(root)', etc.
+**    profiler stacks. For the TraceEvent API, closes the currently active stack
+**    before reporting so the generated B/E event stream remains balanced.
 */
 LUA_API void lmprof_finalize_profiler(lua_State *L, lmprof_State *st, int pop_remaining);
 

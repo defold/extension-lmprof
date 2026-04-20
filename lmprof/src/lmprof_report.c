@@ -484,12 +484,13 @@ static int graph_report(lua_State *L, lmprof_Report *report) {
 #define CHROME_NAME_SAMPLER "Instruction Sampling"
 #define CHROME_NAME_CR_BROWSER "CrBrowserMain"
 #define CHROME_NAME_CR_RENDERER "CrRendererMain"
+#define CHROME_NAME_RUN_TASK "RunTask"
 
 #define CHROME_USER_TIMING "blink.user_timing"
 #define CHROME_TIMLINE "disabled-by-default-devtools.timeline"
 #define CHROME_TIMELINE_FRAME "disabled-by-default-devtools.timeline.frame"
 
-#define CHROME_OPT_NAME(n, o) (((n) == l_nullptr) ? (o) : (n))
+#define CHROME_OPT_NAME(n, o) (((n) == l_nullptr || *(n) == '\0') ? (o) : (n))
 #define CHROME_EVENT_NAME(E) CHROME_OPT_NAME((E)->data.event.info->source, LMPROF_RECORD_NAME_UNKNOWN)
 
 #define JSON_OPEN_OBJ "{"
@@ -528,10 +529,12 @@ static int graph_report(lua_State *L, lmprof_Report *report) {
 
 /* MetaEvents */
 static int __metaProcess(lua_State *L, lmprof_Report *R, const lmprof_EventProcess *process, const char *name, const char *pname);
-static int __metaTracingStarted(lua_State *L, lmprof_Report *R, const lmprof_EventProcess *process, const char *name, const char *url);
 
 /* chrome://tracing/ metadata reporting/ */
 static int __metaAbout(lua_State *L, lmprof_Report *R, const char *name, const char *url);
+
+/* Synthetic renderer task root */
+static int __eventRunTask(lua_State *L, lmprof_Report *R, lu_time start, lu_time duration);
 
 /* BEGIN_FRAME */
 static int __enterFrame(lua_State *L, lmprof_Report *R, const TraceEvent *event);
@@ -542,6 +545,7 @@ static int __drawFrame(lua_State *L, lmprof_Report *R, const TraceEvent *event);
 
 /* BEGIN_ROUTINE/END_ROUTINE ENTER_SCOPE/EXIT_SCOPE */
 static int __eventScope(lua_State *L, lmprof_Report *R, const TraceEvent *event, const char *name, const char *eventName);
+static int __eventCompleteScope(lua_State *L, lmprof_Report *R, const TraceEvent *event, const char *eventName);
 static int __eventUpdateCounters(lua_State *L, lmprof_Report *R, const TraceEvent *event);
 static int __eventLineInstance(lua_State *L, lmprof_Report *R, const TraceEvent *event);
 static int __eventSampleInstance(lua_State *L, lmprof_Report *R, const TraceEvent *event);
@@ -665,31 +669,16 @@ static int __metaAbout(lua_State *L, lmprof_Report *R, const char *name, const c
   return LMPROF_REPORT_UNKNOWN_TYPE;
 }
 
-static int __metaTracingStarted(lua_State *L, lmprof_Report *R, const lmprof_EventProcess *process, const char *name, const char *url) {
+static int __eventRunTask(lua_State *L, lmprof_Report *R, lu_time start, lu_time duration) {
   if (R->type == lTable) {
-    lua_newtable(L); /* [..., header] */
+    lua_newtable(L);
     luaL_settabss(L, "cat", CHROME_TIMLINE);
-    luaL_settabss(L, "name", "TracingStartedInBrowser");
-    luaL_settabss(L, "ph", "I");
-    luaL_settabsi(L, "pid", process->pid);
-    luaL_settabsi(L, "tid", process->tid);
-    luaL_settabsi(L, "ts", 0);
-
-    lua_newtable(L); /* [..., header, args] */
-    lua_newtable(L); /* [..., header, args, data] */
-    luaL_settabsi(L, "frameTreeNodeId", 1);
-    luaL_settabsb(L, "persistentIds", 1);
-
-    lua_newtable(L); /* [..., header, args, data, frames] */
-    lua_newtable(L); /* [..., header, args, data, frames, frames_array] */
-    luaL_settabss(L, "frame", "FADE");
-    luaL_settabss(L, "url", CHROME_OPT_NAME(url, TRACE_EVENT_DEFAULT_URL));
-    luaL_settabss(L, "name", CHROME_OPT_NAME(name, TRACE_EVENT_DEFAULT_NAME));
-    luaL_settabsi(L, "processId", process->pid);
-    lua_rawseti(L, -2, 1); /* [..., header, args, data, frames] */
-    lua_setfield(L, -2, "frames"); /* [..., header, args, data] */
-    lua_setfield(L, -2, "data"); /* [..., header, args] */
-    lua_setfield(L, -2, "args"); /* [..., header] */
+    luaL_settabss(L, "name", CHROME_NAME_RUN_TASK);
+    luaL_settabss(L, "ph", "X");
+    luaL_settabsi(L, "pid", R->st->thread.mainproc.pid);
+    luaL_settabsi(L, "tid", R->st->thread.mainproc.tid);
+    luaL_settabsi(L, "ts", l_cast(lua_Integer, start));
+    luaL_settabsi(L, "dur", l_cast(lua_Integer, duration));
     return LUA_OK;
   }
   else if (R->type == lFile) {
@@ -699,51 +688,37 @@ static int __metaTracingStarted(lua_State *L, lmprof_Report *R, const lmprof_Eve
     REPORT_ENSURE_FILE_DELIM(R);
     fprintf(f, JSON_OPEN_OBJ);
     fprintf(f, JSON_ASSIGN("cat", JSON_STRING(CHROME_TIMLINE)));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("TracingStartedInBrowser")));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("I")));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("pid", LUA_INTEGER_FMT), process->pid);
-    fprintf(f, JSON_DELIM JSON_ASSIGN("tid", LUA_INTEGER_FMT), process->tid);
-    fprintf(f, JSON_DELIM JSON_ASSIGN("ts", "0"));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("args", JSON_OPEN_OBJ));
-    fprintf(f, JSON_ASSIGN("data", JSON_OPEN_OBJ));
-    fprintf(f, JSON_ASSIGN("frameTreeNodeId", "1"));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("persistentIds", "true"));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("frames", JSON_OPEN_ARRAY JSON_OPEN_OBJ));
-    fprintf(f, JSON_ASSIGN("frame", JSON_STRING("FADE")));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("url", JSON_STRING("%s")), CHROME_OPT_NAME(url, TRACE_EVENT_DEFAULT_URL));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("%s")), CHROME_OPT_NAME(name, TRACE_EVENT_DEFAULT_NAME));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("processId", LUA_INTEGER_FMT), process->pid);
-    fprintf(f, JSON_CLOSE_OBJ JSON_CLOSE_ARRAY);
-    fprintf(f, JSON_CLOSE_OBJ);
-    fprintf(f, JSON_CLOSE_OBJ);
+    fprintf(f, JSON_DELIM JSON_ASSIGN("name", JSON_STRING(CHROME_NAME_RUN_TASK)));
+    fprintf(f, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("X")));
+    fprintf(f, JSON_DELIM JSON_ASSIGN("pid", LUA_INTEGER_FMT), R->st->thread.mainproc.pid);
+    fprintf(f, JSON_DELIM JSON_ASSIGN("tid", LUA_INTEGER_FMT), R->st->thread.mainproc.tid);
+    fprintf(f, JSON_DELIM JSON_ASSIGN("ts", "%" PRIluTIME ""), start);
+    fprintf(f, JSON_DELIM JSON_ASSIGN("dur", "%" PRIluTIME ""), duration);
     fprintf(f, JSON_CLOSE_OBJ);
     R->f.delim = 1;
     return LUA_OK;
+#else
+    return LMPROF_REPORT_DISABLED_IO;
 #endif
   }
   else if (R->type == lBuffer) {
     luaL_Buffer *b = &R->b.buff;
+    char ts_str[IDENTIFIER_BUFFER_LENGTH] = LMPROF_ZERO_STRUCT;
+    char dur_str[IDENTIFIER_BUFFER_LENGTH] = LMPROF_ZERO_STRUCT;
+    if (snprintf(ts_str, sizeof(ts_str), "%" PRIluTIME "", start) < 0)
+      LMPROF_LOG("<%s>:sprintf encoding error\n", __FUNCTION__);
+    if (snprintf(dur_str, sizeof(dur_str), "%" PRIluTIME "", duration) < 0)
+      LMPROF_LOG("<%s>:sprintf encoding error\n", __FUNCTION__);
 
     REPORT_ENSURE_BUFFER_DELIM(R);
     luaL_addliteral(b, JSON_OPEN_OBJ);
     luaL_addliteral(b, JSON_ASSIGN("cat", JSON_STRING(CHROME_TIMLINE)));
-    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("TracingStartedInBrowser")));
-    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("I")));
-    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("pid", LUA_INT_FORMAT), LUA_INT_CAST(process->pid));
-    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("tid", LUA_INT_FORMAT), LUA_INT_CAST(process->tid));
-    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("ts", "0"));
-    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("args", JSON_OPEN_OBJ));
-    luaL_addliteral(b, JSON_ASSIGN("data", JSON_OPEN_OBJ));
-    luaL_addliteral(b, JSON_ASSIGN("frameTreeNodeId", "1"));
-    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("persistentIds", "true"));
-    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("frames", JSON_OPEN_ARRAY JSON_OPEN_OBJ));
-    luaL_addliteral(b, JSON_ASSIGN("frame", JSON_STRING("FADE")));
-    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("url", JSON_STRING("%s")), CHROME_OPT_NAME(url, TRACE_EVENT_DEFAULT_URL));
-    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("%s")), CHROME_OPT_NAME(name, TRACE_EVENT_DEFAULT_NAME));
-    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("processId", LUA_INT_FORMAT), LUA_INT_CAST(process->pid));
-    luaL_addliteral(b, JSON_CLOSE_OBJ JSON_CLOSE_ARRAY);
-    luaL_addliteral(b, JSON_CLOSE_OBJ);
-    luaL_addliteral(b, JSON_CLOSE_OBJ);
+    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("name", JSON_STRING(CHROME_NAME_RUN_TASK)));
+    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("X")));
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("pid", LUA_INT_FORMAT), LUA_INT_CAST(R->st->thread.mainproc.pid));
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("tid", LUA_INT_FORMAT), LUA_INT_CAST(R->st->thread.mainproc.tid));
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("ts", "%s"), ts_str);
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("dur", "%s"), dur_str);
     luaL_addliteral(b, JSON_CLOSE_OBJ);
     R->b.delim = 1;
     return LUA_OK;
@@ -935,7 +910,7 @@ static int __drawFrame(lua_State *L, lmprof_Report *R, const TraceEvent *event) 
 static int __eventScope(lua_State *L, lmprof_Report *R, const TraceEvent *event, const char *name, const char *eventName) {
   if (R->type == lTable) {
     lua_newtable(L);
-    luaL_settabss(L, "cat", CHROME_USER_TIMING);
+    luaL_settabss(L, "cat", CHROME_TIMLINE);
     luaL_settabss(L, "name", eventName);
     luaL_settabss(L, "ph", name);
     luaL_settabsi(L, "pid", event->call.proc.pid);
@@ -952,7 +927,7 @@ static int __eventScope(lua_State *L, lmprof_Report *R, const TraceEvent *event,
 
     REPORT_ENSURE_FILE_DELIM(R);
     fprintf(f, JSON_OPEN_OBJ);
-    fprintf(f, JSON_ASSIGN("cat", JSON_STRING(CHROME_USER_TIMING)));
+    fprintf(f, JSON_ASSIGN("cat", JSON_STRING(CHROME_TIMLINE)));
     fprintf(f, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("%s")), eventName);
     fprintf(f, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("%s")), name);
     fprintf(f, JSON_DELIM JSON_ASSIGN("pid", LUA_INTEGER_FMT), event->call.proc.pid);
@@ -976,7 +951,7 @@ static int __eventScope(lua_State *L, lmprof_Report *R, const TraceEvent *event,
 
     REPORT_ENSURE_BUFFER_DELIM(R);
     luaL_addliteral(b, JSON_OPEN_OBJ);
-    luaL_addliteral(b, JSON_ASSIGN("cat", JSON_STRING(CHROME_USER_TIMING)));
+    luaL_addliteral(b, JSON_ASSIGN("cat", JSON_STRING(CHROME_TIMLINE)));
     luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("%s")), eventName);
     luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("%s")), name);
     luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("pid", LUA_INT_FORMAT), LUA_INT_CAST(event->call.proc.pid));
@@ -985,6 +960,77 @@ static int __eventScope(lua_State *L, lmprof_Report *R, const TraceEvent *event,
     else
       luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("tid", LUA_INT_FORMAT), LUA_INT_CAST(event->call.proc.tid));
     luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("ts", "%s"), ts_str);
+    luaL_addliteral(b, JSON_CLOSE_OBJ);
+    R->b.delim = 1;
+    return LUA_OK;
+  }
+  return LMPROF_REPORT_UNKNOWN_TYPE;
+}
+
+static int __eventCompleteScope(lua_State *L, lmprof_Report *R, const TraceEvent *event, const char *eventName) {
+  const TraceEvent *sibling = event->data.event.sibling;
+  const lu_time start = LMPROF_TIME_ADJ(event->call.s.time, R->st->conf);
+  const lu_time end = sibling != l_nullptr ? LMPROF_TIME_ADJ(sibling->call.s.time, R->st->conf) : start;
+  const lu_time duration = end > start ? end - start : 0;
+
+  if (R->type == lTable) {
+    lua_newtable(L);
+    luaL_settabss(L, "cat", CHROME_TIMLINE);
+    luaL_settabss(L, "name", eventName);
+    luaL_settabss(L, "ph", "X");
+    luaL_settabsi(L, "pid", event->call.proc.pid);
+    if (op_routine(event->op))
+      luaL_settabsi(L, "tid", R->st->thread.mainproc.tid);
+    else
+      luaL_settabsi(L, "tid", event->call.proc.tid);
+    luaL_settabsi(L, "ts", l_cast(lua_Integer, start));
+    luaL_settabsi(L, "dur", l_cast(lua_Integer, duration));
+    return LUA_OK;
+  }
+  else if (R->type == lFile) {
+#if defined(LMPROF_FILE_API)
+    FILE *f = R->f.file;
+
+    REPORT_ENSURE_FILE_DELIM(R);
+    fprintf(f, JSON_OPEN_OBJ);
+    fprintf(f, JSON_ASSIGN("cat", JSON_STRING(CHROME_TIMLINE)));
+    fprintf(f, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("%s")), eventName);
+    fprintf(f, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("X")));
+    fprintf(f, JSON_DELIM JSON_ASSIGN("pid", LUA_INTEGER_FMT), event->call.proc.pid);
+    if (op_routine(event->op))
+      fprintf(f, JSON_DELIM JSON_ASSIGN("tid", LUA_INTEGER_FMT), R->st->thread.mainproc.tid);
+    else
+      fprintf(f, JSON_DELIM JSON_ASSIGN("tid", LUA_INTEGER_FMT), event->call.proc.tid);
+    fprintf(f, JSON_DELIM JSON_ASSIGN("ts", "%" PRIluTIME ""), start);
+    fprintf(f, JSON_DELIM JSON_ASSIGN("dur", "%" PRIluTIME ""), duration);
+    fprintf(f, JSON_CLOSE_OBJ);
+    R->f.delim = 1;
+    return LUA_OK;
+#else
+    return LMPROF_REPORT_DISABLED_IO;
+#endif
+  }
+  else if (R->type == lBuffer) {
+    luaL_Buffer *b = &R->b.buff;
+    char ts_str[IDENTIFIER_BUFFER_LENGTH] = LMPROF_ZERO_STRUCT;
+    char dur_str[IDENTIFIER_BUFFER_LENGTH] = LMPROF_ZERO_STRUCT;
+    if (snprintf(ts_str, sizeof(ts_str), "%" PRIluTIME "", start) < 0)
+      LMPROF_LOG("<%s>:sprintf encoding error\n", __FUNCTION__);
+    if (snprintf(dur_str, sizeof(dur_str), "%" PRIluTIME "", duration) < 0)
+      LMPROF_LOG("<%s>:sprintf encoding error\n", __FUNCTION__);
+
+    REPORT_ENSURE_BUFFER_DELIM(R);
+    luaL_addliteral(b, JSON_OPEN_OBJ);
+    luaL_addliteral(b, JSON_ASSIGN("cat", JSON_STRING(CHROME_TIMLINE)));
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("%s")), eventName);
+    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("X")));
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("pid", LUA_INT_FORMAT), LUA_INT_CAST(event->call.proc.pid));
+    if (op_routine(event->op))
+      luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("tid", LUA_INT_FORMAT), LUA_INT_CAST(R->st->thread.mainproc.tid));
+    else
+      luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("tid", LUA_INT_FORMAT), LUA_INT_CAST(event->call.proc.tid));
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("ts", "%s"), ts_str);
+    luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("dur", "%s"), dur_str);
     luaL_addliteral(b, JSON_CLOSE_OBJ);
     R->b.delim = 1;
     return LUA_OK;
@@ -1199,9 +1245,6 @@ static void tracevent_table_header(lua_State *L, lmprof_Report *R, const TraceEv
   REPORT_TABLE_APPEND(L, R, __metaProcess(L, R, &browser, CHROME_META_THREAD, CHROME_NAME_CR_BROWSER));
   REPORT_TABLE_APPEND(L, R, __metaProcess(L, R, &renderer, CHROME_META_THREAD, CHROME_NAME_CR_RENDERER));
   REPORT_TABLE_APPEND(L, R, __metaProcess(L, R, &sampler, CHROME_META_THREAD, CHROME_NAME_SAMPLER));
-  if (!BITFIELD_TEST(R->st->conf, LMPROF_OPT_TRACE_ABOUT_TRACING)) {
-    REPORT_TABLE_APPEND(L, R, __metaTracingStarted(L, R, &browser, R->st->i.name, R->st->i.url));
-  }
 
   /* Named threads */
   if (BITFIELD_TEST(R->st->conf, LMPROF_OPT_TRACE_LAYOUT_SPLIT)) {
@@ -1223,6 +1266,56 @@ static void tracevent_table_header(lua_State *L, lmprof_Report *R, const TraceEv
   }
 }
 
+typedef struct TraceEventBounds {
+  int valid;
+  lu_time start;
+  lu_time end;
+} TraceEventBounds;
+
+static TraceEventType traceevent_report_op(const TraceEvent *event) {
+  TraceEventType op = event->op;
+  if ((op == ENTER_SCOPE || op == EXIT_SCOPE) && event->data.event.info != l_nullptr) {
+    if (BITFIELD_TEST(event->data.event.info->event, LMPROF_RECORD_IGNORED | LMPROF_RECORD_ROOT))
+      op = IGNORE_SCOPE; /* Function "ignored" during profiling */
+  }
+  return op;
+}
+
+static void traceevent_bounds_add(TraceEventBounds *bounds, lu_time time) {
+  if (!bounds->valid) {
+    bounds->valid = 1;
+    bounds->start = time;
+    bounds->end = time;
+  }
+  else {
+    if (time < bounds->start)
+      bounds->start = time;
+    if (time > bounds->end)
+      bounds->end = time;
+  }
+}
+
+static int traceevent_find_bounds(lmprof_State *st, TraceEventTimeline *list, TraceEventBounds *bounds) {
+  TraceEventPage *page = l_nullptr;
+  bounds->valid = 0;
+  bounds->start = 0;
+  bounds->end = 0;
+
+  for (page = list->head; page != l_nullptr; page = page->next) {
+    size_t i;
+    for (i = 0; i < page->count; ++i) {
+      const TraceEvent *event = &page->event_array[i];
+      const TraceEventType op = traceevent_report_op(event);
+      if (op == IGNORE_SCOPE || !op_adjust(op))
+        continue;
+
+      traceevent_bounds_add(bounds, LMPROF_TIME_ADJ(event->call.s.time, st->conf));
+    }
+  }
+
+  return bounds->valid && bounds->end > bounds->start;
+}
+
 /*
 ** Assuming a LUA_TTABLE is on top of the provided lua_State, format all trace
 ** buffered trace events and append them to the array, starting at "arrayIndex"
@@ -1231,6 +1324,7 @@ static void traceevent_table_events(lua_State *L, lmprof_Report *R, TraceEventTi
   lmprof_State *st = R->st;
   TraceEventPage *page = l_nullptr; /* Page iterator */
   TraceEvent *samples = l_nullptr; /* Linked-list of SAMPLE_EVENT events*/
+  TraceEventBounds bounds;
 
   size_t counter = 0;
   size_t counterFrequency = TRACE_EVENT_COUNTER_FREQ;
@@ -1253,15 +1347,14 @@ static void traceevent_table_events(lua_State *L, lmprof_Report *R, TraceEventTi
   }
 
   luaL_checkstack(L, 8, __FUNCTION__);
+  if (traceevent_find_bounds(st, list, &bounds))
+    REPORT_TABLE_APPEND(L, R, __eventRunTask(L, R, bounds.start, bounds.end - bounds.start));
+
   for (page = list->head; page != l_nullptr; page = page->next) {
     size_t i;
     for (i = 0; i < page->count; ++i) {
       TraceEvent *event = &page->event_array[i];
-      TraceEventType op = event->op;
-      if (op == ENTER_SCOPE || op == EXIT_SCOPE) {
-        if (BITFIELD_TEST(event->data.event.info->event, LMPROF_RECORD_IGNORED | LMPROF_RECORD_ROOT))
-          op = IGNORE_SCOPE; /* Function "ignored" during profiling */
-      }
+      TraceEventType op = traceevent_report_op(event);
 
       switch (op) {
         case BEGIN_FRAME: {
@@ -1294,7 +1387,8 @@ static void traceevent_table_events(lua_State *L, lmprof_Report *R, TraceEventTi
           break;
         }
         case ENTER_SCOPE: {
-          REPORT_TABLE_APPEND(L, R, __eventScope(L, R, event, CHROME_META_BEGIN, CHROME_EVENT_NAME(event)));
+          if (event->data.event.sibling != l_nullptr)
+            REPORT_TABLE_APPEND(L, R, __eventCompleteScope(L, R, event, CHROME_EVENT_NAME(event)));
           if (BITFIELD_TEST(st->mode, LMPROF_MODE_MEMORY) && (counterFrequency == 1 || ((++counter) % counterFrequency) == 0)) {
             REPORT_TABLE_APPEND(L, R, __eventUpdateCounters(L, R, event));
             counter = 0;
@@ -1302,7 +1396,6 @@ static void traceevent_table_events(lua_State *L, lmprof_Report *R, TraceEventTi
           break;
         }
         case EXIT_SCOPE: {
-          REPORT_TABLE_APPEND(L, R, __eventScope(L, R, event, CHROME_META_END, CHROME_EVENT_NAME(event)));
           if (BITFIELD_TEST(st->mode, LMPROF_MODE_MEMORY) && (counterFrequency == 1 || ((++counter) % counterFrequency) == 0)) {
             REPORT_TABLE_APPEND(L, R, __eventUpdateCounters(L, R, event));
             counter = 0;
