@@ -79,7 +79,7 @@ static int io_fgc(lua_State *L) {
 }
 
 /* Create & Open a file-handle userdata, placing it ontop of the Lua stack */
-static FILE **io_fud(lua_State *L, const char *output) {
+static FILE **io_fud(lua_State *L, const char *output, const char *mode) {
   FILE **pf = l_pcast(FILE **, lmprof_newuserdata(L, sizeof(FILE *)));
   *pf = l_nullptr;
 
@@ -91,7 +91,7 @@ static FILE **io_fud(lua_State *L, const char *output) {
   #endif
 
   /* Open File... consider destroying the profiler state on failure? */
-  if ((*pf = fopen(output, "w")) == l_nullptr) {
+  if ((*pf = fopen(output, mode)) == l_nullptr) {
     luaL_error(L, "cannot open file '%s' (%s)", output, strerror(errno));
     return l_nullptr;
   }
@@ -100,6 +100,30 @@ static FILE **io_fud(lua_State *L, const char *output) {
 
 #endif
 /* }================================================================== */
+
+static int lmprof_ascii_equal_ci(char a, char b) {
+  if (a >= 'A' && a <= 'Z')
+    a = l_cast(char, a + ('a' - 'A'));
+  if (b >= 'A' && b <= 'Z')
+    b = l_cast(char, b + ('a' - 'A'));
+  return a == b;
+}
+
+static int lmprof_path_ends_with_json(const char *file) {
+  const char *ext = ".json";
+  size_t i;
+  const size_t file_len = file == l_nullptr ? 0 : strlen(file);
+  const size_t ext_len = strlen(ext);
+  if (file_len < ext_len)
+    return 0;
+
+  file += file_len - ext_len;
+  for (i = 0; i < ext_len; ++i) {
+    if (!lmprof_ascii_equal_ci(file[i], ext[i]))
+      return 0;
+  }
+  return 1;
+}
 
 /*
 ** {==================================================================
@@ -1311,6 +1335,492 @@ static int traceevent_find_bounds(lmprof_State *st, TraceEventTimeline *list, Tr
 }
 
 /*
+** {==================================================================
+** Perfetto TrackEvent protobuf file output
+** ===================================================================
+*/
+
+#define PB_WIRE_VARINT 0
+#define PB_WIRE_DELIMITED 2
+
+#define PERFETTO_TRACE_PACKET 1
+#define PERFETTO_PACKET_TIMESTAMP 8
+#define PERFETTO_PACKET_TRUSTED_SEQUENCE_ID 10
+#define PERFETTO_PACKET_TRACK_EVENT 11
+#define PERFETTO_PACKET_TRACK_DESCRIPTOR 60
+#define PERFETTO_TRUSTED_SEQUENCE_ID 1
+
+#define PERFETTO_TRACK_UUID 1
+#define PERFETTO_TRACK_NAME 2
+#define PERFETTO_TRACK_PROCESS 3
+#define PERFETTO_TRACK_THREAD 4
+#define PERFETTO_TRACK_PARENT_UUID 5
+#define PERFETTO_TRACK_COUNTER 8
+#define PERFETTO_TRACK_DISALLOW_SYSTEM_MERGE 9
+
+#define PERFETTO_PROCESS_PID 1
+#define PERFETTO_PROCESS_NAME 6
+#define PERFETTO_THREAD_PID 1
+#define PERFETTO_THREAD_TID 2
+#define PERFETTO_THREAD_NAME 5
+#define PERFETTO_COUNTER_UNIT 3
+#define PERFETTO_COUNTER_UNIT_SIZE_BYTES 3
+
+#define PERFETTO_EVENT_TYPE 9
+#define PERFETTO_EVENT_TRACK_UUID 11
+#define PERFETTO_EVENT_CATEGORY 22
+#define PERFETTO_EVENT_NAME 23
+#define PERFETTO_EVENT_COUNTER_VALUE 30
+
+#define PERFETTO_EVENT_SLICE_BEGIN 1
+#define PERFETTO_EVENT_SLICE_END 2
+#define PERFETTO_EVENT_INSTANT 3
+#define PERFETTO_EVENT_COUNTER 4
+
+#define PERFETTO_PROCESS_UUID_BASE 0x1000000000000000ULL
+#define PERFETTO_THREAD_UUID_BASE 0x2000000000000000ULL
+#define PERFETTO_COUNTER_UUID_BASE 0x3000000000000000ULL
+
+static size_t pb_size_varint(uint64_t value) {
+  size_t size = 1;
+  while (value >= 0x80) {
+    value >>= 7;
+    ++size;
+  }
+  return size;
+}
+
+static size_t pb_size_key(uint32_t field_id, uint32_t wire_type) {
+  return pb_size_varint((l_cast(uint64_t, field_id) << 3) | wire_type);
+}
+
+static size_t pb_size_uint64_field(uint32_t field_id, uint64_t value) {
+  return pb_size_key(field_id, PB_WIRE_VARINT) + pb_size_varint(value);
+}
+
+static size_t pb_size_int32_field(uint32_t field_id, int32_t value) {
+  return pb_size_uint64_field(field_id, l_cast(uint64_t, l_cast(int64_t, value)));
+}
+
+static size_t pb_size_int64_field(uint32_t field_id, int64_t value) {
+  return pb_size_uint64_field(field_id, l_cast(uint64_t, value));
+}
+
+static size_t pb_size_bool_field(uint32_t field_id) {
+  return pb_size_key(field_id, PB_WIRE_VARINT) + 1;
+}
+
+static size_t pb_size_string_field(uint32_t field_id, const char *value) {
+  const size_t len = value == l_nullptr ? 0 : strlen(value);
+  return pb_size_key(field_id, PB_WIRE_DELIMITED) + pb_size_varint(l_cast(uint64_t, len)) + len;
+}
+
+static size_t pb_size_message_field(uint32_t field_id, size_t len) {
+  return pb_size_key(field_id, PB_WIRE_DELIMITED) + pb_size_varint(l_cast(uint64_t, len)) + len;
+}
+
+static int pb_write_bytes(FILE *f, const void *data, size_t len) {
+  if (len == 0)
+    return LUA_OK;
+  return fwrite(data, 1, len, f) == len ? LUA_OK : LMPROF_REPORT_FAILURE;
+}
+
+static int pb_write_varint(FILE *f, uint64_t value) {
+  unsigned char buffer[10];
+  size_t len = 0;
+  do {
+    unsigned char byte = l_cast(unsigned char, value & 0x7f);
+    value >>= 7;
+    if (value != 0)
+      byte = l_cast(unsigned char, byte | 0x80);
+    buffer[len++] = byte;
+  } while (value != 0);
+
+  return pb_write_bytes(f, buffer, len);
+}
+
+static int pb_write_key(FILE *f, uint32_t field_id, uint32_t wire_type) {
+  return pb_write_varint(f, (l_cast(uint64_t, field_id) << 3) | wire_type);
+}
+
+static int pb_write_uint64_field(FILE *f, uint32_t field_id, uint64_t value) {
+  if (pb_write_key(f, field_id, PB_WIRE_VARINT) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return pb_write_varint(f, value);
+}
+
+static int pb_write_int32_field(FILE *f, uint32_t field_id, int32_t value) {
+  return pb_write_uint64_field(f, field_id, l_cast(uint64_t, l_cast(int64_t, value)));
+}
+
+static int pb_write_int64_field(FILE *f, uint32_t field_id, int64_t value) {
+  return pb_write_uint64_field(f, field_id, l_cast(uint64_t, value));
+}
+
+static int pb_write_bool_field(FILE *f, uint32_t field_id, int value) {
+  return pb_write_uint64_field(f, field_id, value ? 1 : 0);
+}
+
+static int pb_write_message_prefix(FILE *f, uint32_t field_id, size_t len) {
+  if (pb_write_key(f, field_id, PB_WIRE_DELIMITED) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return pb_write_varint(f, l_cast(uint64_t, len));
+}
+
+static int pb_write_string_field(FILE *f, uint32_t field_id, const char *value) {
+  const size_t len = value == l_nullptr ? 0 : strlen(value);
+  if (pb_write_message_prefix(f, field_id, len) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return pb_write_bytes(f, value == l_nullptr ? "" : value, len);
+}
+
+static uint64_t perfetto_process_uuid(lua_Integer pid) {
+  return PERFETTO_PROCESS_UUID_BASE | l_cast(uint64_t, l_cast(uint32_t, pid));
+}
+
+static uint64_t perfetto_thread_uuid(lua_Integer pid, lua_Integer tid) {
+  return PERFETTO_THREAD_UUID_BASE | (l_cast(uint64_t, l_cast(uint32_t, pid)) << 32) | l_cast(uint64_t, l_cast(uint32_t, tid));
+}
+
+static uint64_t perfetto_memory_counter_uuid(lua_Integer pid) {
+  return PERFETTO_COUNTER_UUID_BASE | l_cast(uint64_t, l_cast(uint32_t, pid));
+}
+
+static uint64_t perfetto_time_ns(const lmprof_State *st, lu_time time) {
+  const uint64_t adjusted = l_cast(uint64_t, LMPROF_TIME_ADJ(time, st->conf));
+#if LUA_32BITS
+  return adjusted * 1000u;
+#else
+  return BITFIELD_TEST(st->conf, LMPROF_OPT_CLOCK_MICRO) ? adjusted * 1000u : adjusted;
+#endif
+}
+
+static lua_Integer perfetto_event_tid(lmprof_Report *R, const TraceEvent *event) {
+  return op_routine(event->op) ? R->st->thread.mainproc.tid : event->call.proc.tid;
+}
+
+static uint64_t perfetto_event_track_uuid(lmprof_Report *R, const TraceEvent *event) {
+  return perfetto_thread_uuid(event->call.proc.pid, perfetto_event_tid(R, event));
+}
+
+static int perfetto_write_trace_packet(FILE *f, size_t packet_size) {
+  const size_t sequence_size = pb_size_uint64_field(PERFETTO_PACKET_TRUSTED_SEQUENCE_ID, PERFETTO_TRUSTED_SEQUENCE_ID);
+  if (pb_write_message_prefix(f, PERFETTO_TRACE_PACKET, packet_size + sequence_size) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return pb_write_uint64_field(f, PERFETTO_PACKET_TRUSTED_SEQUENCE_ID, PERFETTO_TRUSTED_SEQUENCE_ID);
+}
+
+static int perfetto_write_process_track(lmprof_Report *R, lua_Integer pid, const char *name) {
+  FILE *f = R->f.file;
+  const char *process_name = CHROME_OPT_NAME(name, CHROME_NAME_PROCESS);
+  const size_t process_size = pb_size_int32_field(PERFETTO_PROCESS_PID, l_cast(int32_t, pid))
+                            + pb_size_string_field(PERFETTO_PROCESS_NAME, process_name);
+  const size_t descriptor_size = pb_size_uint64_field(PERFETTO_TRACK_UUID, perfetto_process_uuid(pid))
+                               + pb_size_string_field(PERFETTO_TRACK_NAME, process_name)
+                               + pb_size_message_field(PERFETTO_TRACK_PROCESS, process_size);
+  const size_t packet_size = pb_size_message_field(PERFETTO_PACKET_TRACK_DESCRIPTOR, descriptor_size);
+
+  if (perfetto_write_trace_packet(f, packet_size) != LUA_OK
+      || pb_write_message_prefix(f, PERFETTO_PACKET_TRACK_DESCRIPTOR, descriptor_size) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_TRACK_UUID, perfetto_process_uuid(pid)) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_TRACK_NAME, process_name) != LUA_OK
+      || pb_write_message_prefix(f, PERFETTO_TRACK_PROCESS, process_size) != LUA_OK
+      || pb_write_int32_field(f, PERFETTO_PROCESS_PID, l_cast(int32_t, pid)) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_PROCESS_NAME, process_name) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_write_thread_track(lmprof_Report *R, lua_Integer pid, lua_Integer tid, const char *name) {
+  FILE *f = R->f.file;
+  const char *thread_name = CHROME_OPT_NAME(name, CHROME_META_TICK);
+  const size_t thread_size = pb_size_int32_field(PERFETTO_THREAD_PID, l_cast(int32_t, pid))
+                           + pb_size_int64_field(PERFETTO_THREAD_TID, l_cast(int64_t, tid))
+                           + pb_size_string_field(PERFETTO_THREAD_NAME, thread_name);
+  const size_t descriptor_size = pb_size_uint64_field(PERFETTO_TRACK_UUID, perfetto_thread_uuid(pid, tid))
+                               + pb_size_string_field(PERFETTO_TRACK_NAME, thread_name)
+                               + pb_size_message_field(PERFETTO_TRACK_THREAD, thread_size)
+                               + pb_size_bool_field(PERFETTO_TRACK_DISALLOW_SYSTEM_MERGE);
+  const size_t packet_size = pb_size_message_field(PERFETTO_PACKET_TRACK_DESCRIPTOR, descriptor_size);
+
+  if (perfetto_write_trace_packet(f, packet_size) != LUA_OK
+      || pb_write_message_prefix(f, PERFETTO_PACKET_TRACK_DESCRIPTOR, descriptor_size) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_TRACK_UUID, perfetto_thread_uuid(pid, tid)) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_TRACK_NAME, thread_name) != LUA_OK
+      || pb_write_message_prefix(f, PERFETTO_TRACK_THREAD, thread_size) != LUA_OK
+      || pb_write_int32_field(f, PERFETTO_THREAD_PID, l_cast(int32_t, pid)) != LUA_OK
+      || pb_write_int64_field(f, PERFETTO_THREAD_TID, l_cast(int64_t, tid)) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_THREAD_NAME, thread_name) != LUA_OK
+      || pb_write_bool_field(f, PERFETTO_TRACK_DISALLOW_SYSTEM_MERGE, 1) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_write_memory_counter_track(lmprof_Report *R, lua_Integer pid) {
+  FILE *f = R->f.file;
+  const size_t counter_size = pb_size_uint64_field(PERFETTO_COUNTER_UNIT, PERFETTO_COUNTER_UNIT_SIZE_BYTES);
+  const size_t descriptor_size = pb_size_uint64_field(PERFETTO_TRACK_UUID, perfetto_memory_counter_uuid(pid))
+                               + pb_size_uint64_field(PERFETTO_TRACK_PARENT_UUID, perfetto_process_uuid(pid))
+                               + pb_size_string_field(PERFETTO_TRACK_NAME, "LuaMemory")
+                               + pb_size_message_field(PERFETTO_TRACK_COUNTER, counter_size);
+  const size_t packet_size = pb_size_message_field(PERFETTO_PACKET_TRACK_DESCRIPTOR, descriptor_size);
+
+  if (perfetto_write_trace_packet(f, packet_size) != LUA_OK
+      || pb_write_message_prefix(f, PERFETTO_PACKET_TRACK_DESCRIPTOR, descriptor_size) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_TRACK_UUID, perfetto_memory_counter_uuid(pid)) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_TRACK_PARENT_UUID, perfetto_process_uuid(pid)) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_TRACK_NAME, "LuaMemory") != LUA_OK
+      || pb_write_message_prefix(f, PERFETTO_TRACK_COUNTER, counter_size) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_COUNTER_UNIT, PERFETTO_COUNTER_UNIT_SIZE_BYTES) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_write_default_tracks(lua_State *L, lmprof_Report *R) {
+  lmprof_State *st = R->st;
+  const lua_Integer pid = st->thread.mainproc.pid;
+  int result = LUA_OK;
+
+  luaL_checkstack(L, 3, __FUNCTION__);
+  result = perfetto_write_process_track(R, pid, CHROME_OPT_NAME(st->i.name, TRACE_EVENT_DEFAULT_NAME));
+  if (result != LUA_OK)
+    return result;
+  result = perfetto_write_thread_track(R, pid, LMPROF_THREAD_BROWSER, CHROME_NAME_BROWSER);
+  if (result != LUA_OK)
+    return result;
+  result = perfetto_write_thread_track(R, pid, st->thread.mainproc.tid, CHROME_NAME_MAIN);
+  if (result != LUA_OK)
+    return result;
+  result = perfetto_write_thread_track(R, pid, LMPROF_THREAD_SAMPLE_TIMELINE, CHROME_NAME_SAMPLER);
+  if (result != LUA_OK)
+    return result;
+  result = perfetto_write_memory_counter_track(R, pid);
+  if (result != LUA_OK)
+    return result;
+
+  if (BITFIELD_TEST(st->conf, LMPROF_OPT_TRACE_LAYOUT_SPLIT)) {
+    lmprof_thread_info(L, LMPROF_TAB_THREAD_NAMES); /* [..., names] */
+    lua_pushnil(L); /* [..., names, nil] */
+    while (lua_next(L, -2) != 0) { /* [..., names, key, value] */
+      if (lua_isnumber(L, -2)) {
+        const lua_Integer tid = lua_tointeger(L, -2);
+        if (tid != LMPROF_THREAD_BROWSER && tid != st->thread.mainproc.tid && tid != LMPROF_THREAD_SAMPLE_TIMELINE) {
+          result = perfetto_write_thread_track(R, pid, tid, lua_tostring(L, -1));
+          if (result != LUA_OK) {
+            lua_pop(L, 2);
+            return result;
+          }
+        }
+      }
+      lua_pop(L, 1); /* [..., names, key] */
+    }
+    lua_pop(L, 1);
+  }
+
+  return LUA_OK;
+}
+
+static int perfetto_write_track_event_prefix(lmprof_Report *R, uint64_t timestamp_ns, size_t event_size) {
+  FILE *f = R->f.file;
+  const size_t packet_size = pb_size_uint64_field(PERFETTO_PACKET_TIMESTAMP, timestamp_ns)
+                           + pb_size_message_field(PERFETTO_PACKET_TRACK_EVENT, event_size);
+  if (perfetto_write_trace_packet(f, packet_size) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_PACKET_TIMESTAMP, timestamp_ns) != LUA_OK
+      || pb_write_message_prefix(f, PERFETTO_PACKET_TRACK_EVENT, event_size) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_write_slice_begin(lmprof_Report *R, uint64_t track_uuid, uint64_t timestamp_ns, const char *category, const char *name) {
+  FILE *f = R->f.file;
+  const char *event_category = CHROME_OPT_NAME(category, "lmprof");
+  const char *event_name = CHROME_OPT_NAME(name, LMPROF_RECORD_NAME_UNKNOWN);
+  const size_t event_size = pb_size_string_field(PERFETTO_EVENT_CATEGORY, event_category)
+                          + pb_size_string_field(PERFETTO_EVENT_NAME, event_name)
+                          + pb_size_uint64_field(PERFETTO_EVENT_TYPE, PERFETTO_EVENT_SLICE_BEGIN)
+                          + pb_size_uint64_field(PERFETTO_EVENT_TRACK_UUID, track_uuid);
+  if (perfetto_write_track_event_prefix(R, timestamp_ns, event_size) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_EVENT_CATEGORY, event_category) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_EVENT_NAME, event_name) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_EVENT_TYPE, PERFETTO_EVENT_SLICE_BEGIN) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_EVENT_TRACK_UUID, track_uuid) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_write_slice_end(lmprof_Report *R, uint64_t track_uuid, uint64_t timestamp_ns) {
+  FILE *f = R->f.file;
+  const size_t event_size = pb_size_uint64_field(PERFETTO_EVENT_TYPE, PERFETTO_EVENT_SLICE_END)
+                          + pb_size_uint64_field(PERFETTO_EVENT_TRACK_UUID, track_uuid);
+  if (perfetto_write_track_event_prefix(R, timestamp_ns, event_size) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_EVENT_TYPE, PERFETTO_EVENT_SLICE_END) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_EVENT_TRACK_UUID, track_uuid) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_write_instant(lmprof_Report *R, uint64_t track_uuid, uint64_t timestamp_ns, const char *category, const char *name) {
+  FILE *f = R->f.file;
+  const char *event_category = CHROME_OPT_NAME(category, "lmprof");
+  const char *event_name = CHROME_OPT_NAME(name, LMPROF_RECORD_NAME_UNKNOWN);
+  const size_t event_size = pb_size_string_field(PERFETTO_EVENT_CATEGORY, event_category)
+                          + pb_size_string_field(PERFETTO_EVENT_NAME, event_name)
+                          + pb_size_uint64_field(PERFETTO_EVENT_TYPE, PERFETTO_EVENT_INSTANT)
+                          + pb_size_uint64_field(PERFETTO_EVENT_TRACK_UUID, track_uuid);
+  if (perfetto_write_track_event_prefix(R, timestamp_ns, event_size) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_EVENT_CATEGORY, event_category) != LUA_OK
+      || pb_write_string_field(f, PERFETTO_EVENT_NAME, event_name) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_EVENT_TYPE, PERFETTO_EVENT_INSTANT) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_EVENT_TRACK_UUID, track_uuid) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_write_counter(lmprof_Report *R, lua_Integer pid, uint64_t timestamp_ns, int64_t value) {
+  FILE *f = R->f.file;
+  const size_t event_size = pb_size_uint64_field(PERFETTO_EVENT_TYPE, PERFETTO_EVENT_COUNTER)
+                          + pb_size_uint64_field(PERFETTO_EVENT_TRACK_UUID, perfetto_memory_counter_uuid(pid))
+                          + pb_size_int64_field(PERFETTO_EVENT_COUNTER_VALUE, value);
+  if (perfetto_write_track_event_prefix(R, timestamp_ns, event_size) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_EVENT_TYPE, PERFETTO_EVENT_COUNTER) != LUA_OK
+      || pb_write_uint64_field(f, PERFETTO_EVENT_TRACK_UUID, perfetto_memory_counter_uuid(pid)) != LUA_OK
+      || pb_write_int64_field(f, PERFETTO_EVENT_COUNTER_VALUE, value) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTimeline *list) {
+  lmprof_State *st = R->st;
+  TraceEventPage *page = l_nullptr;
+  TraceEvent *samples = l_nullptr;
+  TraceEventBounds bounds;
+  int has_run_task = 0;
+
+  size_t counter = 0;
+  size_t counterFrequency = TRACE_EVENT_COUNTER_FREQ;
+
+  timeline_adjust(list);
+  if (st->i.counterFrequency > 0)
+    counterFrequency = l_cast(size_t, st->i.counterFrequency);
+
+  if (BITFIELD_TEST(st->conf, LMPROF_OPT_TRACE_COMPRESS)) {
+    int result;
+    TraceEventCompressOpts opts;
+    opts.id.pid = 0;
+    opts.id.tid = 0;
+    opts.threshold = st->i.event_threshold;
+    if ((result = timeline_compress(list, opts)) != TRACE_EVENT_OK) {
+      luaL_error(L, "trace event compression error: %d", result);
+      return LMPROF_REPORT_FAILURE;
+    }
+  }
+
+  if (perfetto_write_default_tracks(L, R) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+
+  has_run_task = traceevent_find_bounds(st, list, &bounds);
+  if (has_run_task && perfetto_write_slice_begin(R,
+        perfetto_thread_uuid(st->thread.mainproc.pid, st->thread.mainproc.tid),
+        perfetto_time_ns(st, bounds.start),
+        CHROME_TIMLINE,
+        CHROME_NAME_RUN_TASK) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+
+  for (page = list->head; page != l_nullptr; page = page->next) {
+    size_t i;
+    for (i = 0; i < page->count; ++i) {
+      TraceEvent *event = &page->event_array[i];
+      TraceEventType op = traceevent_report_op(event);
+      const uint64_t timestamp_ns = op_adjust(op) ? perfetto_time_ns(st, event->call.s.time) : 0;
+      const uint64_t track_uuid = op_adjust(op) ? perfetto_event_track_uuid(R, event) : 0;
+
+      switch (op) {
+        case BEGIN_FRAME:
+          if (perfetto_write_instant(R, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "BeginFrame") != LUA_OK)
+            return LMPROF_REPORT_FAILURE;
+          break;
+        case END_FRAME:
+          if (perfetto_write_instant(R, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "ActivateLayerTree") != LUA_OK
+              || perfetto_write_instant(R, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "DrawFrame") != LUA_OK)
+            return LMPROF_REPORT_FAILURE;
+          break;
+        case BEGIN_ROUTINE:
+          if (perfetto_write_slice_begin(R, track_uuid, timestamp_ns, CHROME_TIMLINE, __threadName(L, R, event)) != LUA_OK)
+            return LMPROF_REPORT_FAILURE;
+          break;
+        case END_ROUTINE:
+          if (perfetto_write_slice_end(R, track_uuid, timestamp_ns) != LUA_OK)
+            return LMPROF_REPORT_FAILURE;
+          break;
+        case LINE_SCOPE: {
+          char line_name[IDENTIFIER_BUFFER_LENGTH] = LMPROF_ZERO_STRUCT;
+          if (snprintf(line_name, sizeof(line_name), "%s: Line %d",
+                CHROME_OPT_NAME(event->data.line.info->source, LMPROF_RECORD_NAME_UNKNOWN),
+                event->data.line.line) < 0)
+            LMPROF_LOG("<%s>:sprintf encoding error\n", __FUNCTION__);
+          if (perfetto_write_instant(R, track_uuid, timestamp_ns, CHROME_USER_TIMING, line_name) != LUA_OK)
+            return LMPROF_REPORT_FAILURE;
+          break;
+        }
+        case SAMPLE_EVENT:
+          if (samples != l_nullptr) {
+            const uint64_t sample_track = perfetto_thread_uuid(st->thread.mainproc.pid, LMPROF_THREAD_SAMPLE_TIMELINE);
+            if (perfetto_write_slice_begin(R, sample_track, perfetto_time_ns(st, samples->call.s.time), CHROME_TIMLINE, "EvaluateScript") != LUA_OK
+                || perfetto_write_slice_end(R, sample_track, timestamp_ns) != LUA_OK)
+              return LMPROF_REPORT_FAILURE;
+          }
+          samples = event;
+          break;
+        case ENTER_SCOPE:
+          if (event->data.event.sibling != l_nullptr) {
+            if (perfetto_write_slice_begin(R, track_uuid, timestamp_ns, CHROME_TIMLINE, CHROME_EVENT_NAME(event)) != LUA_OK)
+              return LMPROF_REPORT_FAILURE;
+          }
+          if (BITFIELD_TEST(st->mode, LMPROF_MODE_MEMORY) && (counterFrequency == 1 || ((++counter) % counterFrequency) == 0)) {
+            if (perfetto_write_counter(R, event->call.proc.pid, timestamp_ns, l_cast(int64_t, unit_allocated(&event->call.s))) != LUA_OK)
+              return LMPROF_REPORT_FAILURE;
+            counter = 0;
+          }
+          break;
+        case EXIT_SCOPE:
+          if (event->data.event.sibling != l_nullptr) {
+            if (perfetto_write_slice_end(R, track_uuid, timestamp_ns) != LUA_OK)
+              return LMPROF_REPORT_FAILURE;
+          }
+          if (BITFIELD_TEST(st->mode, LMPROF_MODE_MEMORY) && (counterFrequency == 1 || ((++counter) % counterFrequency) == 0)) {
+            if (perfetto_write_counter(R, event->call.proc.pid, timestamp_ns, l_cast(int64_t, unit_allocated(&event->call.s))) != LUA_OK)
+              return LMPROF_REPORT_FAILURE;
+            counter = 0;
+          }
+          break;
+        case PROCESS:
+          if (perfetto_write_process_track(R, event->call.proc.pid, event->data.process.name) != LUA_OK
+              || perfetto_write_memory_counter_track(R, event->call.proc.pid) != LUA_OK)
+            return LMPROF_REPORT_FAILURE;
+          break;
+        case THREAD:
+          if (perfetto_write_thread_track(R, event->call.proc.pid, event->call.proc.tid, event->data.process.name) != LUA_OK)
+            return LMPROF_REPORT_FAILURE;
+          break;
+        case IGNORE_SCOPE:
+          break;
+        default:
+          return LMPROF_REPORT_FAILURE;
+      }
+    }
+  }
+
+  if (has_run_task && perfetto_write_slice_end(R,
+        perfetto_thread_uuid(st->thread.mainproc.pid, st->thread.mainproc.tid),
+        perfetto_time_ns(st, bounds.end)) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+
+  return LUA_OK;
+}
+
+/* }================================================================== */
+
+/*
 ** Assuming a LUA_TTABLE is on top of the provided lua_State, format all trace
 ** buffered trace events and append them to the array, starting at "arrayIndex"
 */
@@ -1465,6 +1975,9 @@ static int traceevent_report(lua_State *L, lmprof_Report *report) {
   }
   else if (report->type == lFile) {
 #if defined(LMPROF_FILE_API)
+    if (report->f.binary)
+      return perfetto_traceevent_report(L, report, list);
+
     if (BITFIELD_TEST(st->conf, LMPROF_OPT_TRACE_ABOUT_TRACING))
       fprintf(report->f.file, JSON_OPEN_OBJ JSON_STRING("traceEvents") ":" JSON_OPEN_ARRAY JSON_NEWLINE);
     else
@@ -1582,12 +2095,14 @@ LUA_API int lmprof_report(lua_State *L, lmprof_State *st, lmprof_ReportType type
 #if defined(LMPROF_FILE_API)
     FILE **pf;
     int result = LUA_OK;
+    const int perfetto_binary = BITFIELD_TEST(st->mode, LMPROF_MODE_TRACE) && !lmprof_path_ends_with_json(file);
     if (file == l_nullptr)
       result = LMPROF_REPORT_FAILURE;
-    else if ((pf = io_fud(L, file)) != l_nullptr) { /* [..., io_ud] */
+    else if ((pf = io_fud(L, file, perfetto_binary ? "wb" : "w")) != l_nullptr) { /* [..., io_ud] */
       report.type = lFile;
       report.f.file = *pf;
       report.f.delim = 0;
+      report.f.binary = perfetto_binary;
       report.f.indent = "";
       result = lmprof_push_report(L, &report);
       if (fclose(*pf) == 0) {

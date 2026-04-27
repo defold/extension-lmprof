@@ -19,23 +19,13 @@ Specify properties:
 
 ## Viewer
 
-* Open Google Chrome
-* Open DevTools -> `Performance`
-* turn on the `Memory` checkbox:
+lmprof saves Perfetto binary traces by default. The helper script writes `mem.perfetto-trace` unless you pass a custom filename.
 
-<img width="1125" alt="image" src="https://user-images.githubusercontent.com/2209596/222743207-e987d7df-020e-43da-8bf3-d2c49e6b84ce.png">
+* Open [ui.perfetto.dev](https://ui.perfetto.dev)
+* Choose `Open trace file`
+* Load the generated `.perfetto-trace` file
 
-* Click `Load profile...` and choose your `json`
-
-<img width="741" alt="image" src="https://user-images.githubusercontent.com/2209596/222743828-cc3d8b80-a64c-4e35-ac5d-2bc8a1d4f2ec.png">
-
-<img width="1123" alt="image" src="https://user-images.githubusercontent.com/2209596/222744110-456458bc-d644-4972-8831-a4c35133bda4.png">
-
-### Chrome Performance notes
-
-Recent Chrome versions filter unknown event names in browser-shaped traces. lmprof exports a generic trace so custom Lua scopes are visible in the Performance flame chart.
-
-After loading a trace, expand the main thread track and zoom into the recorded range. The top-level task may be shown as `RunTask` or `Long Task`; lmprof scopes are nested under it. Typical scopes include:
+After loading a trace, expand the main thread track and zoom into the recorded range. The top-level task is shown as `RunTask`; lmprof scopes are nested under it. Typical scopes include:
 
 * `Main`
 * `update (lmprof/scripts/lmprof_helper.lua:49)`
@@ -51,11 +41,13 @@ After loading a trace, expand the main thread track and zoom into the recorded r
 * `disable_state [C]`
 * `draw [C]`
 
-Many scopes are very short, often microseconds, so they may not show labels until you zoom in. Use the Performance panel search to find a scope name such as `draw [C]` or `update`.
+Many scopes are very short, often microseconds, so they may not show labels until you zoom in. Use search to find a scope name such as `draw [C]` or `update`.
 
-When memory profiling is enabled, Chrome also shows `UpdateCounters` events and the memory graph. Seeing only `UpdateCounters` and `Long Task` usually means the trace was exported as a browser trace instead of a generic trace, or the view is zoomed out too far.
+When memory profiling is enabled, the trace includes a `LuaMemory` counter track.
 
-Also, use [stat.py](https://github.com/defold/extension-lmprof/blob/master/stat.py) to see calls statistics.
+### JSON output
+
+If you need Chrome Trace Event JSON for older tools, pass an output filename ending in `.json`. JSON traces can be opened in Chrome DevTools `Performance` or processed by [stat.py](https://github.com/defold/extension-lmprof/blob/master/stat.py).
 
 >stat.py my.json
 

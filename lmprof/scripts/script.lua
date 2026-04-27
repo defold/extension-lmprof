@@ -6,7 +6,7 @@
         --memory --micro
 
     lua.exe script.lua --input=codegen.lua --args="inp/natives_global.lua lua" \
-        --output=out.json --memory --trace --compress=1000 --memory --counter_freq=256
+        --output=out.perfetto-trace --memory --trace --compress=1000 --memory --counter_freq=256
 
 @LICENSE
     See Copyright Notice in lmprof_lib.h
@@ -24,7 +24,7 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
 
 [INPUT]
   --input: input script file
-  --output: optional output location (default: STDOUT)
+  --output: optional output location (default: STDOUT). Trace file output is Perfetto binary unless the path ends in .json.
   --format: format/reduce an already generated profiler output.
   --path: Additional package.searchpath string for module searching ('export LUA_PATH' alternative).
   --args: Command line arguments to forward to the input script file.
@@ -34,7 +34,7 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
   [Instrumenting]:
     --time: Enable 'base' timing.
     --memory Enable 'base' Lua allocator tracking.
-    --trace: Enable DevTools timeline profiling.
+    --trace: Enable timeline profiling. File output writes Perfetto binary by default.
     --lines: Enable line frequency (or line event) profiling.
 
   [Sampling]:
@@ -58,8 +58,8 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
     --process=value: Synthetic process ID.
     --compress=time: Suppress Trace Event records with durations less than 'time'
     --draw_frame: Enable BeginFrame support for trace events (i.e., each 'frame' corresponds to execution of a single coroutine between resume/yields)
-    --split: Output a unique thread ids for each thread in the chromium output; Otherwise, all events use the main thread.
-    --tracing: Output a format compatible with chrome://tracing/.
+    --split: Output a unique thread ids for each thread in the trace output; Otherwise, all events use the main thread.
+    --tracing: With a .json trace output, write a chrome://tracing compatible wrapper.
     --page_limit: TraceEvent buffer size in bytes
     --counter_freq: Frequency of 'UpdateCounters' event generation.
     --name: Synthetic 'TracingStartedInBrowser' Name.
@@ -69,6 +69,7 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
     --callgrind: Callgrind compatible layout
     --pepper: Pepperfish style layout (optional, default: false)
     --json: Write 'base' profiling output as formatted JSON.
+    Trace file output uses Perfetto binary unless --output ends in .json.
     --sort: result sorting algorithm [count, size, time] (optional, default: count)
     --csv: Comma-separated flat output
     --show_lines: Show line frequencies in generated output.

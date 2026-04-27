@@ -30,13 +30,13 @@ The creation of graphs that relate activation records and measurements about the
   - Future iterations may alleviate this condition, e.g., a graph structure per coroutine.
 
 ### Event Profiling
-Creating *events* that can be used to generate flamegraphs, e.g., [devtools-frontend](https://github.com/ChromeDevTools/devtools-frontend) and [speedscope](https://github.com/jlfwong/speedscope).
+Creating *events* that can be used to generate flamegraphs, e.g., [Perfetto UI](https://ui.perfetto.dev), [devtools-frontend](https://github.com/ChromeDevTools/devtools-frontend), and [speedscope](https://github.com/jlfwong/speedscope).
 
 1. A call stack maintains `CallFrame` data and tailcall information of the activation record. Depending on its context callframes are formatted and buffered as [Trace Events](src/collections/lmprof_traceevent.h) for the duration of the profile.
 
 1. Trace Events are post-processed, e.g., (1) times shifted to zero to avoid potential down-casting issues; and (2) `LUA_HOOKCALL/LUA_HOOKRET` event pairings that fall under a certain execution threshold are optionally suppressed.
 
-1. Trace Events can then be formatted into a Lua table or application specific representation, e.g., a DevTools compatible JSON.
+1. Trace Events can then be formatted into a Lua table or application specific representation. File output uses Perfetto binary by default; use an output path ending in `.json` for DevTools compatible JSON.
 
 ## Documentation
 The exported API is broken down into four categories: **Configuration**, **Profiling**, **Miscellaneous**, and **Local State**. See **Developer Notes** for implementation details/caveats.
@@ -88,10 +88,10 @@ The exported API is broken down into four categories: **Configuration**, **Profi
 --    'draw_frame' - Enable BeginFrame support for trace events, i.e., each
 --      'frame' corresponds to length of a coroutines execution; the time
 --      between successive resume/yield calls.
---    'split' - Output a unique thread ids for each thread in the chromium
+--    'split' - Output a unique thread ids for each thread in the trace
 --      output; Otherwise, all events use the main thread and stack elements are
 --      artificially pushed/popped when the coroutine resume/yields.
---    'tracing' - Output a format compatible with chrome://tracing/.
+--    'tracing' - With a .json trace output, use the chrome://tracing wrapper.
 --
 --  Trace Event Options: [INTEGER]
 --    'process' - Synthetic Trace Event process ID.
@@ -145,7 +145,7 @@ value = lmprof.has_io()
 --  "instrument" - [GRAPH] Measurements between successive lua_Hook calls and
 --    track the relationships between functions.
 --
---  "trace" - [TRACE] Generate events compatible with DevTools
+--  "trace" - [TRACE] Generate events compatible with Perfetto/DevTools
 --
 --  "single_thread" - Single thread profiling. Ignore all threads except the one
 --    that invoked 'start'.
@@ -192,7 +192,8 @@ state = lmprof.start(...)
 --  output_path - a file-path string where the formatted results are written.
 --    For 'graph' profiling, the generated output is a Lua compatible table that
 --    can be loaded with 'require' or 'dofile'. Meanwhile, 'trace' profiling
---    will generate a JSON file.
+--    writes Perfetto binary traces by default. Use a ".json" output path for
+--    Chrome Trace Event JSON.
 --
 -- *NOTE*: output_path requires LMPROF_FILE_API to be enabled (see 'has_io').
 result = lmprof.stop([output_path])
@@ -398,17 +399,17 @@ Each example assumes the lmprof library is in the same directory as the Lua exec
 ## Note: --path="scripts/?.lua" can be used in lieu of LUA_PATH
 ./lua scripts/script.lua --input=scripts/test/2html.lua --memory
 
-# Generate a frontend.chrome-dev.tools instrumentation that removes all function
-# calls shorter than 500 nanoseconds while disabling the garbage collector
-./lua scripts/script.lua --input=scripts/test/2html.lua --output=out.json --trace --memory --disable_gc --compress=500
+# Generate a Perfetto trace that removes all function calls shorter than 500
+# nanoseconds while disabling the garbage collector
+./lua scripts/script.lua --input=scripts/test/2html.lua --output=out.perfetto-trace --trace --memory --disable_gc --compress=500
 
-# Generate a frontend.chrome-dev.tools instrumentation that:
+# Generate a Perfetto trace that:
 #   1. --args: Passes the arguments "inp/natives_global.lua lua" to codegen.lua;
-#   2. --output: Writes a DevTools compatible json to out.json;
+#   2. --output: Writes a Perfetto binary trace to out.perfetto-trace;
 #   3. --memory: Generate UpdateCounters events (memory usage);
 #   4. --counter_freq: Only output every 256th UpdateCounter event (one is generated before/after every function call)
 #   5. --compress: Remove all events whose execution time is less than one microsecond.
-lua.exe script.lua --input=codegen.lua --args="inp/natives_global.lua lua" --output=out.json --memory --trace --compress=1000 --memory --counter_freq=256
+lua.exe script.lua --input=codegen.lua --args="inp/natives_global.lua lua" --output=out.perfetto-trace --memory --trace --compress=1000 --memory --counter_freq=256
 ```
 
 ## Developer Notes
@@ -439,6 +440,7 @@ profiler events. Fairly unobtrusive and **should** only require compile time Lua
 1. [Lua](https://www.lua.org/versions.html).
 1. [lmprof](https://github.com/pmusa/lmprof): Original implementation from Pablo Musa.
 1. [PepperfishProfiler](http://lua-users.org/wiki/PepperfishProfiler): Reference style of formatted output.
+1. [Perfetto UI](https://ui.perfetto.dev): Default trace viewer for binary trace output.
 1. [Callgrind Format Specification](https://valgrind.org/docs/manual/cl-format.html): Reference.
 1. [Trace Event Format](https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU): Original trace event specification and V8 [profiler specification](https://github.com/v8/v8/blob/44bd8fd7/src/inspector/js_protocol.json#L1399).
 1. [devtools-frontend](https://github.com/ChromeDevTools/devtools-frontend): Chrome DevTools client and webapp; modified version used in generating images in [docs](docs/).

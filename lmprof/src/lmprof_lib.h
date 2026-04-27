@@ -62,7 +62,7 @@ LUALIB_API int lmprof_create(lua_State *L);
 **  "instrument" - [GRAPH] Measurements between successive lua_Hook calls and
 **      track the relationships between functions.
 **
-**  "trace" - [TRACE] Generate events compatible with DevTools
+**  "trace" - [TRACE] Generate events compatible with Perfetto/DevTools
 **
 **  "single_thread" - Single thread profiling. Ignore all threads except the one
 **    that invoked 'start'.
@@ -109,7 +109,8 @@ LUALIB_API int lmprof_start(lua_State *L);
 **  output_path - a file-path string where the formatted results are written.
 **    For 'graph' profiling, the generated output is a Lua compatible table that
 **    can be loaded with 'require' or 'dofile'. Meanwhile, 'trace' profiling
-**    will generate a JSON file.
+**    writes Perfetto binary traces by default. Use a ".json" output path for
+**    Chrome Trace Event JSON.
 **
 ** @NOTE: output_path requires LMPROF_FILE_API to be enabled (see 'has_io').
 */
@@ -199,10 +200,10 @@ LUALIB_API int lmprof_profile_function(lua_State *L);
 **    'draw_frame' - Enable BeginFrame support for trace events, i.e., each
 **      'frame' corresponds to length of a coroutines execution; the time
 **      between successive resume/yield calls.
-**    'split' - Output a unique thread ids for each thread in the chromium
+**    'split' - Output a unique thread ids for each thread in the trace
 **      output; Otherwise, all events use the main thread and stack elements are
 **      artificially pushed/popped when the coroutine resume/yields.
-**    'tracing' - Output a format compatible with chrome://tracing/.
+**    'tracing' - For ".json" trace outputs, use the chrome://tracing wrapper.
 **
 **  Trace Event Options: [INTEGER]
 **    'process' - Synthetic Trace Event process ID.
@@ -336,4 +337,3 @@ LUALIB_API int lchrome_trace_event_endframe(lua_State *L);
 ******************************************************************************/
 
 #endif
-

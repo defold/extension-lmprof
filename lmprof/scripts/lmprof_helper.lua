@@ -1,15 +1,19 @@
 local M = {}
 
+local function is_json(filename)
+    return filename:lower():sub(-5) == ".json"
+end
+
 function M.stop(filename, path, remove_c_calls)
     path = path and path or ""
-    filename = filename and filename or "mem.json"
+    filename = filename and filename or "mem.perfetto-trace"
     local fullpath = path..filename
     if not _G.profilerlmprof:stop(fullpath) then
         error("Failure!")
     end
     print("Result of profiling has been saved on disk: "..fullpath)
 
-    if remove_c_calls then
+    if remove_c_calls and is_json(filename) then
         local report_postprocess = require("lmprof.scripts.report_postprocess")
         filename = "no_c_calls_"..filename
         report_postprocess.filter_out_lines_with(fullpath, filename, {
@@ -18,6 +22,8 @@ function M.stop(filename, path, remove_c_calls)
             -- "self %[C%]" -- remove "self [C]"
             "%[C%]" -- remove all "[C]" callse
         })
+    elseif remove_c_calls then
+        print("remove_c_calls is only supported for .json trace output")
     end
 end
 

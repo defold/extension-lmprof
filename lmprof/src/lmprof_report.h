@@ -127,13 +127,11 @@
 **  [NUMBER]:
 **    pageusage - percent usage of the trace event list.
 **
-** RECORDS: The layout will not be detailed here, however, it is compatible with
-**  the Chrome DevTools (timline) spec:
-**    https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview
-**  and when the table is json encoded, can be loaded into
-**    https://github.com/ChromeDevTools/devtools-frontend.
-**  Note, that the generated output uses some deprecated features and will
-**  require change in the future and there are still many @TODO's remaining.
+** RECORDS: Table and string output use a Chrome Trace Event compatible layout.
+**  File output uses Perfetto TrackEvent protobuf by default, and falls back to
+**  Chrome Trace Event JSON only when the requested output path ends in ".json".
+**  Perfetto traces can be loaded into:
+**    https://ui.perfetto.dev
 */
 
 typedef enum lmprof_ReportType {
@@ -168,6 +166,7 @@ typedef struct lmprof_Report {
     struct {
       FILE *file;
       int delim; /* Requires delimitation on next write */
+      int binary; /* Trace file output should use Perfetto protobuf unless the path ends in .json */
       const char *indent; /* Current indentation string (often a function of some nested depth) */
     } f;
     struct {
