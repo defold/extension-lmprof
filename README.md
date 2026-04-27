@@ -19,7 +19,7 @@ Specify properties:
 
 ## Viewer
 
-lmprof saves Perfetto binary traces by default. The helper script writes `mem.perfetto-trace` unless you pass a custom filename.
+lmprof saves Perfetto binary traces by default. The helper script writes `mem.perfetto-trace` unless you pass a custom filename. Use a filename ending in `.tracy` to write a native Tracy capture instead.
 
 * Open [ui.perfetto.dev](https://ui.perfetto.dev)
 * Choose `Open trace file`
@@ -44,6 +44,10 @@ After loading a trace, expand the main thread track and zoom into the recorded r
 Many scopes are very short, often microseconds, so they may not show labels until you zoom in. Use search to find a scope name such as `draw [C]` or `update`.
 
 When memory profiling is enabled, the trace includes a `LuaMemory` counter track.
+
+### Tracy output
+
+If you prefer the Tracy profiler, pass an output filename ending in `.tracy`. The native capture includes lmprof CPU zones, frame markers, thread names, and the `LuaMemory` plot when memory profiling is enabled.
 
 ### JSON output
 

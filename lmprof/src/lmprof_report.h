@@ -128,8 +128,9 @@
 **    pageusage - percent usage of the trace event list.
 **
 ** RECORDS: Table and string output use a Chrome Trace Event compatible layout.
-**  File output uses Perfetto TrackEvent protobuf by default, and falls back to
-**  Chrome Trace Event JSON only when the requested output path ends in ".json".
+**  File output uses Perfetto TrackEvent protobuf by default, falls back to
+**  Chrome Trace Event JSON when the requested output path ends in ".json", and
+**  writes Tracy native captures when the output path ends in ".tracy".
 **  Perfetto traces can be loaded into:
 **    https://ui.perfetto.dev
 */
@@ -166,7 +167,8 @@ typedef struct lmprof_Report {
     struct {
       FILE *file;
       int delim; /* Requires delimitation on next write */
-      int binary; /* Trace file output should use Perfetto protobuf unless the path ends in .json */
+      int binary; /* See lmprof_TraceFileFormat in lmprof_report.c */
+      const char *path; /* Original output path */
       const char *indent; /* Current indentation string (often a function of some nested depth) */
     } f;
     struct {

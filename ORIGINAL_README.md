@@ -36,7 +36,7 @@ Creating *events* that can be used to generate flamegraphs, e.g., [Perfetto UI](
 
 1. Trace Events are post-processed, e.g., (1) times shifted to zero to avoid potential down-casting issues; and (2) `LUA_HOOKCALL/LUA_HOOKRET` event pairings that fall under a certain execution threshold are optionally suppressed.
 
-1. Trace Events can then be formatted into a Lua table or application specific representation. File output uses Perfetto binary by default; use an output path ending in `.json` for DevTools compatible JSON.
+1. Trace Events can then be formatted into a Lua table or application specific representation. File output uses Perfetto binary by default; use an output path ending in `.json` for DevTools compatible JSON or `.tracy` for Tracy native captures.
 
 ## Documentation
 The exported API is broken down into four categories: **Configuration**, **Profiling**, **Miscellaneous**, and **Local State**. See **Developer Notes** for implementation details/caveats.
@@ -145,7 +145,7 @@ value = lmprof.has_io()
 --  "instrument" - [GRAPH] Measurements between successive lua_Hook calls and
 --    track the relationships between functions.
 --
---  "trace" - [TRACE] Generate events compatible with Perfetto/DevTools
+--  "trace" - [TRACE] Generate events compatible with Perfetto/Tracy/DevTools
 --
 --  "single_thread" - Single thread profiling. Ignore all threads except the one
 --    that invoked 'start'.
@@ -193,7 +193,7 @@ state = lmprof.start(...)
 --    For 'graph' profiling, the generated output is a Lua compatible table that
 --    can be loaded with 'require' or 'dofile'. Meanwhile, 'trace' profiling
 --    writes Perfetto binary traces by default. Use a ".json" output path for
---    Chrome Trace Event JSON.
+--    Chrome Trace Event JSON or ".tracy" for Tracy native capture output.
 --
 -- *NOTE*: output_path requires LMPROF_FILE_API to be enabled (see 'has_io').
 result = lmprof.stop([output_path])
@@ -441,6 +441,7 @@ profiler events. Fairly unobtrusive and **should** only require compile time Lua
 1. [lmprof](https://github.com/pmusa/lmprof): Original implementation from Pablo Musa.
 1. [PepperfishProfiler](http://lua-users.org/wiki/PepperfishProfiler): Reference style of formatted output.
 1. [Perfetto UI](https://ui.perfetto.dev): Default trace viewer for binary trace output.
+1. [Tracy](https://github.com/wolfpld/tracy): Native `.tracy` trace viewer.
 1. [Callgrind Format Specification](https://valgrind.org/docs/manual/cl-format.html): Reference.
 1. [Trace Event Format](https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU): Original trace event specification and V8 [profiler specification](https://github.com/v8/v8/blob/44bd8fd7/src/inspector/js_protocol.json#L1399).
 1. [devtools-frontend](https://github.com/ChromeDevTools/devtools-frontend): Chrome DevTools client and webapp; modified version used in generating images in [docs](docs/).

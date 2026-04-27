@@ -24,7 +24,7 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
 
 [INPUT]
   --input: input script file
-  --output: optional output location (default: STDOUT). Trace file output is Perfetto binary unless the path ends in .json.
+  --output: optional output location (default: STDOUT). Trace file output is Perfetto binary unless the path ends in .json or .tracy.
   --format: format/reduce an already generated profiler output.
   --path: Additional package.searchpath string for module searching ('export LUA_PATH' alternative).
   --args: Command line arguments to forward to the input script file.
@@ -69,7 +69,7 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
     --callgrind: Callgrind compatible layout
     --pepper: Pepperfish style layout (optional, default: false)
     --json: Write 'base' profiling output as formatted JSON.
-    Trace file output uses Perfetto binary unless --output ends in .json.
+    Trace file output uses Perfetto binary unless --output ends in .json or .tracy.
     --sort: result sorting algorithm [count, size, time] (optional, default: count)
     --csv: Comma-separated flat output
     --show_lines: Show line frequencies in generated output.
