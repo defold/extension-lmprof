@@ -1156,21 +1156,19 @@ static int __eventUpdateCounters(lua_State *L, lmprof_Report *R, const TraceEven
     lua_newtable(L); /* [..., process] */
     luaL_settabss(L, "cat", CHROME_TIMLINE);
     luaL_settabss(L, "name", "UpdateCounters");
-    luaL_settabss(L, "ph", "I");
+    luaL_settabss(L, "ph", "C");
     luaL_settabss(L, "s", "g");
     luaL_settabsi(L, "pid", event->call.proc.pid);
     luaL_settabsi(L, "tid", event->call.proc.tid);
     luaL_settabsi(L, "ts", l_cast(lua_Integer, LMPROF_TIME_ADJ(event->call.s.time, R->st->conf)));
 
     lua_newtable(L); /* [..., process, args] */
-    lua_newtable(L); /* [..., process, args, data] */
-    luaL_settabsi(L, "jsHeapSizeUsed", l_cast(lua_Integer, unit_allocated(&event->call.s)));
+    luaL_settabsi(L, "LuaMemory", l_cast(lua_Integer, unit_allocated(&event->call.s)));
     /*
       luaL_settabsi(L, "documents", 0);
       luaL_settabsi(L, "jsEventListeners", 0);
       luaL_settabsi(L, "nodes", 0);
     */
-    lua_setfield(L, -2, "data"); /* [..., process, args] */
     lua_setfield(L, -2, "args"); /* [..., process] */
     return LUA_OK;
   }
@@ -1182,15 +1180,13 @@ static int __eventUpdateCounters(lua_State *L, lmprof_Report *R, const TraceEven
     fprintf(f, JSON_OPEN_OBJ);
     fprintf(f, JSON_ASSIGN("cat", JSON_STRING(CHROME_TIMLINE)));
     fprintf(f, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("UpdateCounters")));
-    fprintf(f, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("I")));
+    fprintf(f, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("C")));
     fprintf(f, JSON_DELIM JSON_ASSIGN("s", JSON_STRING("g")));
     fprintf(f, JSON_DELIM JSON_ASSIGN("pid", LUA_INTEGER_FMT), event->call.proc.pid);
     fprintf(f, JSON_DELIM JSON_ASSIGN("tid", LUA_INTEGER_FMT), event->call.proc.tid);
     fprintf(f, JSON_DELIM JSON_ASSIGN("ts", "%" PRIluTIME ""), LMPROF_TIME_ADJ(event->call.s.time, R->st->conf));
     fprintf(f, JSON_DELIM JSON_ASSIGN("args", JSON_OPEN_OBJ));
-    fprintf(f, JSON_ASSIGN("data", JSON_OPEN_OBJ));
-    fprintf(f, JSON_ASSIGN("jsHeapSizeUsed", "%" PRIluSIZEDIFF), unit_allocated(&event->call.s));
-    fprintf(f, JSON_CLOSE_OBJ);
+    fprintf(f, JSON_ASSIGN("LuaMemory", "%" PRIluSIZEDIFF), unit_allocated(&event->call.s));
     fprintf(f, JSON_CLOSE_OBJ);
     fprintf(f, JSON_CLOSE_OBJ);
     R->f.delim = 1;
@@ -1212,15 +1208,13 @@ static int __eventUpdateCounters(lua_State *L, lmprof_Report *R, const TraceEven
     luaL_addliteral(b, JSON_OPEN_OBJ);
     luaL_addliteral(b, JSON_ASSIGN("cat", JSON_STRING(CHROME_TIMLINE)));
     luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("name", JSON_STRING("UpdateCounters")));
-    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("I")));
+    luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("ph", JSON_STRING("C")));
     luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("s", JSON_STRING("g")));
     luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("pid", LUA_INT_FORMAT), (int)event->call.proc.pid);
     luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("tid", LUA_INT_FORMAT), (int)event->call.proc.tid);
     luaL_addfstring(L, b, JSON_DELIM JSON_ASSIGN("ts", "%s"), ts_str);
     luaL_addliteral(b, JSON_DELIM JSON_ASSIGN("args", JSON_OPEN_OBJ));
-    luaL_addliteral(b, JSON_ASSIGN("data", JSON_OPEN_OBJ));
-    luaL_addfstring(L, b, JSON_ASSIGN("jsHeapSizeUsed", "%s"), hs_str);
-    luaL_addliteral(b, JSON_CLOSE_OBJ);
+    luaL_addfstring(L, b, JSON_ASSIGN("LuaMemory", "%s"), hs_str);
     luaL_addliteral(b, JSON_CLOSE_OBJ);
     luaL_addliteral(b, JSON_CLOSE_OBJ);
     R->b.delim = 1;
