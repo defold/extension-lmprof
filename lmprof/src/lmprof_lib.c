@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include <inttypes.h>
+#include <string.h>
 #define LUA_LIB
 #define LIB_NAME "lmprof"
 #define MODULE_NAME "lmprof"
@@ -830,6 +831,64 @@ static LUA_INLINE lmprof_ReportType report_type(lua_State *L, lmprof_State *st, 
   return type;
 }
 
+static int report_path_ends_with(const char *file, const char *ext) {
+  size_t i;
+  const size_t file_len = strlen(file);
+  const size_t ext_len = strlen(ext);
+
+  if (file_len < ext_len)
+    return 0;
+
+  file += file_len - ext_len;
+  for (i = 0; i < ext_len; ++i) {
+    char left = file[i];
+    char right = ext[i];
+    if (left >= 'A' && left <= 'Z')
+      left = l_cast(char, left + ('a' - 'A'));
+    if (right >= 'A' && right <= 'Z')
+      right = l_cast(char, right + ('a' - 'A'));
+    if (left != right)
+      return 0;
+  }
+  return 1;
+}
+
+static const char *report_file_format(const char *file) {
+  if (report_path_ends_with(file, ".json"))
+    return "JSON";
+  if (report_path_ends_with(file, ".tracy"))
+    return "Tracy";
+  if (report_path_ends_with(file, ".perfetto-trace"))
+    return "Perfetto";
+  return "file";
+}
+
+static void report_file_log(lua_State *L, const char *status, const char *format, const char *file) {
+  const int top = lua_gettop(L);
+
+  if (!lua_checkstack(L, 3))
+    return;
+
+  lua_getglobal(L, "print"); /* [..., print] */
+  if (lua_isfunction(L, -1)) {
+    lua_pushfstring(L, "lmprof: %s writing %s profile: %s", status, format, file);
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK)
+      lua_settop(L, top);
+  }
+  lua_settop(L, top);
+}
+
+static int report_file(lua_State *L, lmprof_State *st, const char *file) {
+  const char *format = report_file_format(file);
+  int success;
+
+  report_file_log(L, "start", format, file);
+  lmprof_report(L, st, lFile, file); /* [..., ok] */
+  success = lua_toboolean(L, -1);
+  report_file_log(L, success ? "finished" : "failed", format, file);
+  return lua_type(L, -1);
+}
+
 static int report_file_list(lua_State *L, lmprof_State *st, int file_idx) {
   int success = 1;
   int wrote = 0;
@@ -839,7 +898,7 @@ static int report_file_list(lua_State *L, lmprof_State *st, int file_idx) {
   while (lua_next(L, paths) != 0) { /* [..., key, value] */
     if (lua_type(L, -1) == LUA_TSTRING) {
       const char *file = lua_tostring(L, -1);
-      lmprof_report(L, st, lFile, file); /* [..., key, value, ok] */
+      report_file(L, st, file); /* [..., key, value, ok] */
       success = success && lua_toboolean(L, -1);
       wrote = 1;
       lua_pop(L, 2); /* [..., key] */
@@ -857,6 +916,8 @@ static int report_file_list(lua_State *L, lmprof_State *st, int file_idx) {
 static int push_report(lua_State *L, lmprof_State *st, lmprof_ReportType type, int file_idx, const char *file) {
   if (type == lFile && file_idx != 0 && lua_type(L, file_idx) == LUA_TTABLE)
     return report_file_list(L, st, file_idx);
+  if (type == lFile && file != l_nullptr)
+    return report_file(L, st, file);
   return lmprof_report(L, st, type, file);
 }
 
@@ -1687,13 +1748,13 @@ LUAMOD_API int luaopen_lmprof(lua_State *L) {
 //     assert(top == lua_gettop(L));
 // }
 
-dmExtension::Result AppInitializeMyExtension(dmExtension::AppParams* params)
+dmExtension::Result AppInitializeLmProf(dmExtension::AppParams* params)
 {
-    dmLogInfo("AppInitializeMyExtension\n");
+    dmLogInfo("AppInitializeLmProf\n");
     return dmExtension::RESULT_OK;
 }
 
-dmExtension::Result InitializeMyExtension(dmExtension::Params* params)
+dmExtension::Result InitializeLmProf(dmExtension::Params* params)
 {
     // Init Lua
     // LuaInit(params->m_L);
@@ -1703,21 +1764,21 @@ dmExtension::Result InitializeMyExtension(dmExtension::Params* params)
     return dmExtension::RESULT_OK;
 }
 
-dmExtension::Result AppFinalizeMyExtension(dmExtension::AppParams* params)
+dmExtension::Result AppFinalizeLmProf(dmExtension::AppParams* params)
 {
-    dmLogInfo("AppFinalizeMyExtension\n");
+    dmLogInfo("AppFinalizeLmProf\n");
     return dmExtension::RESULT_OK;
 }
 
-dmExtension::Result FinalizeMyExtension(dmExtension::Params* params)
+dmExtension::Result FinalizeLmProf(dmExtension::Params* params)
 {
-    dmLogInfo("FinalizeMyExtension\n");
+    dmLogInfo("FinalizeLmProf\n");
     return dmExtension::RESULT_OK;
 }
 
-// dmExtension::Result OnUpdateMyExtension(dmExtension::Params* params)
+// dmExtension::Result OnUpdateLmProf(dmExtension::Params* params)
 // {
-//     dmLogInfo("OnUpdateMyExtension\n");
+//     dmLogInfo("OnUpdateLmProf\n");
 //     return dmExtension::RESULT_OK;
 // }
 
@@ -1726,6 +1787,6 @@ dmExtension::Result FinalizeMyExtension(dmExtension::Params* params)
 //
 // DM_DECLARE_EXTENSION(symbol, name, app_init, app_final, init, update, on_event, final)
 
-// MyExtension is the C++ symbol that holds all relevant extension data.
+// LmProf is the C++ symbol that holds all relevant extension data.
 // It must match the name field in the `ext.manifest`
-DM_DECLARE_EXTENSION(lmprof, LIB_NAME, AppInitializeMyExtension, AppFinalizeMyExtension, InitializeMyExtension, NULL, NULL, FinalizeMyExtension)
+DM_DECLARE_EXTENSION(lmprof, LIB_NAME, AppInitializeLmProf, AppFinalizeLmProf, InitializeLmProf, NULL, NULL, FinalizeLmProf)
