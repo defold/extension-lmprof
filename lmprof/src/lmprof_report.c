@@ -2107,6 +2107,7 @@ typedef struct TracyZone {
   int16_t srcloc;
   int64_t start;
   int64_t end;
+  size_t order;
   uint32_t extra;
   struct TracyZone **children;
   size_t child_count;
@@ -2311,6 +2312,7 @@ static TracyZone *tracy_export_add_zone(TracyExport *E, uint64_t tid, const char
   zone->tid = tid;
   zone->start = start;
   zone->end = end;
+  zone->order = E->zone_count;
   zone->extra = 0;
   E->zones[E->zone_count++] = zone;
   source->count++;
@@ -2395,6 +2397,8 @@ static int tracy_zone_compare(const void *lhs, const void *rhs) {
   if (a->start > b->start) return 1;
   if (a->end > b->end) return -1;
   if (a->end < b->end) return 1;
+  if (a->order < b->order) return -1;
+  if (a->order > b->order) return 1;
   return 0;
 }
 
@@ -2881,12 +2885,19 @@ static const char *tracy_event_file(const TraceEvent *event) {
   return info == l_nullptr ? "" : CHROME_OPT_NAME(info->short_src, "");
 }
 
+static const char *tracy_routine_name(lua_State *L, lmprof_State *st, const TraceEvent *event) {
+  const lua_Integer tid = event->call.proc.tid;
+  const char *opt = tid == st->thread.mainproc.tid ? CHROME_NAME_MAIN : CHROME_META_TICK;
+  return lmprof_thread_name(L, tid, opt);
+}
+
 static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTimeline *list, const char *file) {
   lmprof_State *st = R->st;
   TracyExport E;
   TracyFileWriter W;
   TraceEventBounds bounds;
   TraceEventPage *page = l_nullptr;
+  TraceEvent *routine_begin = l_nullptr;
   size_t counter = 0;
   size_t counterFrequency = TRACE_EVENT_COUNTER_FREQ;
   int result = LUA_OK;
@@ -2937,6 +2948,20 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
             goto done;
           }
           break;
+        case BEGIN_ROUTINE:
+          routine_begin = event;
+          break;
+        case END_ROUTINE:
+          if (routine_begin != l_nullptr) {
+            const int64_t start_ns = l_cast(int64_t, perfetto_time_ns(st, routine_begin->call.s.time));
+            const uint64_t tid = l_cast(uint64_t, st->thread.mainproc.tid);
+            if (tracy_export_add_zone(&E, tid, tracy_routine_name(L, st, routine_begin), "", 0, start_ns, time_ns) == l_nullptr) {
+              result = LMPROF_REPORT_FAILURE;
+              goto done;
+            }
+            routine_begin = l_nullptr;
+          }
+          break;
         case ENTER_SCOPE:
           if (event->data.event.sibling != l_nullptr) {
             const int64_t end_ns = l_cast(int64_t, perfetto_time_ns(st, event->data.event.sibling->call.s.time));
@@ -2963,8 +2988,6 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
           break;
         case PROCESS:
         case END_FRAME:
-        case BEGIN_ROUTINE:
-        case END_ROUTINE:
         case LINE_SCOPE:
         case SAMPLE_EVENT:
         case IGNORE_SCOPE:

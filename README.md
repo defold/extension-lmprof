@@ -68,5 +68,7 @@ If you need Chrome Trace Event JSON for older tools, pass an output filename end
 
 Perfetto's `traceconv` converts Perfetto protobuf traces to Chrome JSON, but it does not convert Chrome JSON back to a TrackEvent protobuf trace. If you need binary Perfetto output for comparison, write `.perfetto-trace` and `.json` from the same lmprof run.
 
+Tracy can import Chrome Trace JSON, but the imported capture is an approximation of the native `.tracy` writer. For the closest Tracy view, write `.tracy` directly from the same profiling session.
+
 ---
 If you have any issues, questions or suggestions please [create an issue](https://github.com/defold/extension-lmprof/issues)
