@@ -19,7 +19,7 @@ Specify properties:
 
 ## Viewer
 
-lmprof saves Perfetto binary traces by default. The helper script writes `mem.perfetto-trace` unless you pass a custom filename. Use a filename ending in `.tracy` to write a native Tracy capture instead.
+lmprof saves Perfetto binary traces by default. The helper script writes `mem.perfetto-trace` to Defold's app save directory and prints the full path in the console. Custom relative filenames are saved there too; absolute filenames are used as-is. Pass an empty second argument, for example `lmprof_helper.stop(nil, "")`, if you explicitly want paths to stay relative to the process working directory. Use a filename ending in `.tracy` to write a native Tracy capture instead.
 
 To compare exporters from the same profiling session, pass multiple filenames:
 
