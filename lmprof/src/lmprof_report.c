@@ -517,6 +517,7 @@ static int graph_report(lua_State *L, lmprof_Report *report) {
 #define CHROME_NAME_SAMPLER "Instruction Sampling"
 #define CHROME_NAME_CR_BROWSER "CrBrowserMain"
 #define CHROME_NAME_CR_RENDERER "CrRendererMain"
+#define CHROME_NAME_MEMORY_COUNTER "UpdateCounters LuaMemory"
 #define CHROME_NAME_RUN_TASK "RunTask"
 
 #define CHROME_USER_TIMING "blink.user_timing"
@@ -1510,6 +1511,15 @@ static uint64_t perfetto_time_ns(const lmprof_State *st, lu_time time) {
 #endif
 }
 
+static uint64_t perfetto_adjusted_time_ns(const lmprof_State *st, lu_time time) {
+  const uint64_t adjusted = l_cast(uint64_t, time);
+#if LUA_32BITS
+  return adjusted * 1000u;
+#else
+  return BITFIELD_TEST(st->conf, LMPROF_OPT_CLOCK_MICRO) ? adjusted * 1000u : adjusted;
+#endif
+}
+
 static lua_Integer perfetto_event_tid(lmprof_Report *R, const TraceEvent *event) {
   return op_routine(event->op) ? R->st->thread.mainproc.tid : event->call.proc.tid;
 }
@@ -1576,7 +1586,7 @@ static int perfetto_write_memory_counter_track(lmprof_Report *R, lua_Integer pid
   const size_t counter_size = pb_size_uint64_field(PERFETTO_COUNTER_UNIT, PERFETTO_COUNTER_UNIT_SIZE_BYTES);
   const size_t descriptor_size = pb_size_uint64_field(PERFETTO_TRACK_UUID, perfetto_memory_counter_uuid(pid))
                                + pb_size_uint64_field(PERFETTO_TRACK_PARENT_UUID, perfetto_process_uuid(pid))
-                               + pb_size_string_field(PERFETTO_TRACK_NAME, "LuaMemory")
+                               + pb_size_string_field(PERFETTO_TRACK_NAME, CHROME_NAME_MEMORY_COUNTER)
                                + pb_size_message_field(PERFETTO_TRACK_COUNTER, counter_size);
   const size_t packet_size = pb_size_message_field(PERFETTO_PACKET_TRACK_DESCRIPTOR, descriptor_size);
 
@@ -1584,7 +1594,7 @@ static int perfetto_write_memory_counter_track(lmprof_Report *R, lua_Integer pid
       || pb_write_message_prefix(f, PERFETTO_PACKET_TRACK_DESCRIPTOR, descriptor_size) != LUA_OK
       || pb_write_uint64_field(f, PERFETTO_TRACK_UUID, perfetto_memory_counter_uuid(pid)) != LUA_OK
       || pb_write_uint64_field(f, PERFETTO_TRACK_PARENT_UUID, perfetto_process_uuid(pid)) != LUA_OK
-      || pb_write_string_field(f, PERFETTO_TRACK_NAME, "LuaMemory") != LUA_OK
+      || pb_write_string_field(f, PERFETTO_TRACK_NAME, CHROME_NAME_MEMORY_COUNTER) != LUA_OK
       || pb_write_message_prefix(f, PERFETTO_TRACK_COUNTER, counter_size) != LUA_OK
       || pb_write_uint64_field(f, PERFETTO_COUNTER_UNIT, PERFETTO_COUNTER_UNIT_SIZE_BYTES) != LUA_OK)
     return LMPROF_REPORT_FAILURE;
@@ -1597,13 +1607,13 @@ static int perfetto_write_default_tracks(lua_State *L, lmprof_Report *R) {
   int result = LUA_OK;
 
   luaL_checkstack(L, 3, __FUNCTION__);
-  result = perfetto_write_process_track(R, pid, CHROME_OPT_NAME(st->i.name, TRACE_EVENT_DEFAULT_NAME));
+  result = perfetto_write_process_track(R, pid, CHROME_NAME_BROWSER);
   if (result != LUA_OK)
     return result;
-  result = perfetto_write_thread_track(R, pid, LMPROF_THREAD_BROWSER, CHROME_NAME_BROWSER);
+  result = perfetto_write_thread_track(R, pid, LMPROF_THREAD_BROWSER, CHROME_NAME_CR_BROWSER);
   if (result != LUA_OK)
     return result;
-  result = perfetto_write_thread_track(R, pid, st->thread.mainproc.tid, CHROME_NAME_MAIN);
+  result = perfetto_write_thread_track(R, pid, st->thread.mainproc.tid, CHROME_NAME_CR_RENDERER);
   if (result != LUA_OK)
     return result;
   result = perfetto_write_thread_track(R, pid, LMPROF_THREAD_SAMPLE_TIMELINE, CHROME_NAME_SAMPLER);
@@ -1704,12 +1714,203 @@ static int perfetto_write_counter(lmprof_Report *R, lua_Integer pid, uint64_t ti
   return LUA_OK;
 }
 
+typedef enum PerfettoQueuedEventType {
+  PERFETTO_QUEUE_SLICE_BEGIN,
+  PERFETTO_QUEUE_SLICE_END,
+  PERFETTO_QUEUE_INSTANT,
+  PERFETTO_QUEUE_LINE_INSTANT,
+  PERFETTO_QUEUE_COUNTER
+} PerfettoQueuedEventType;
+
+typedef struct PerfettoQueuedEvent {
+  PerfettoQueuedEventType type;
+  const TraceEvent *event;
+  uint64_t timestamp_ns;
+  uint64_t start_ns;
+  uint64_t end_ns;
+  uint64_t track_uuid;
+  lua_Integer pid;
+  int64_t counter_value;
+  const char *category;
+  const char *name;
+  unsigned int rank;
+  size_t sequence;
+} PerfettoQueuedEvent;
+
+typedef struct PerfettoEventQueue {
+  PerfettoQueuedEvent *events;
+  size_t count;
+  size_t capacity;
+} PerfettoEventQueue;
+
+#define PERFETTO_QUEUE_RANK_RUN_TASK 0u
+#define PERFETTO_QUEUE_RANK_SCOPE 2u
+
+static int perfetto_queue_phase_rank(const PerfettoQueuedEvent *event) {
+  switch (event->type) {
+    case PERFETTO_QUEUE_SLICE_END:
+      return 0;
+    case PERFETTO_QUEUE_SLICE_BEGIN:
+      return 1;
+    case PERFETTO_QUEUE_INSTANT:
+    case PERFETTO_QUEUE_LINE_INSTANT:
+      return 2;
+    case PERFETTO_QUEUE_COUNTER:
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+static int perfetto_queue_compare(const void *left, const void *right) {
+  const PerfettoQueuedEvent *a = l_pcast(const PerfettoQueuedEvent *, left);
+  const PerfettoQueuedEvent *b = l_pcast(const PerfettoQueuedEvent *, right);
+  const int phase_a = perfetto_queue_phase_rank(a);
+  const int phase_b = perfetto_queue_phase_rank(b);
+
+  if (a->timestamp_ns != b->timestamp_ns)
+    return a->timestamp_ns < b->timestamp_ns ? -1 : 1;
+  if (phase_a != phase_b)
+    return phase_a < phase_b ? -1 : 1;
+
+  if (a->type == PERFETTO_QUEUE_SLICE_END && b->type == PERFETTO_QUEUE_SLICE_END) {
+    if (a->start_ns != b->start_ns)
+      return a->start_ns > b->start_ns ? -1 : 1;
+    if (a->rank != b->rank)
+      return a->rank > b->rank ? -1 : 1;
+  }
+  else if (a->type == PERFETTO_QUEUE_SLICE_BEGIN && b->type == PERFETTO_QUEUE_SLICE_BEGIN) {
+    if (a->end_ns != b->end_ns)
+      return a->end_ns > b->end_ns ? -1 : 1;
+    if (a->rank != b->rank)
+      return a->rank < b->rank ? -1 : 1;
+  }
+
+  if (a->sequence != b->sequence)
+    return a->sequence < b->sequence ? -1 : 1;
+  return 0;
+}
+
+static int perfetto_queue_reserve(PerfettoEventQueue *queue, size_t count) {
+  PerfettoQueuedEvent *next;
+  size_t next_capacity;
+  if (count <= queue->capacity)
+    return LUA_OK;
+
+  next_capacity = queue->capacity == 0 ? 256 : queue->capacity * 2;
+  while (next_capacity < count)
+    next_capacity *= 2;
+
+  next = l_pcast(PerfettoQueuedEvent *, realloc(queue->events, next_capacity * sizeof(PerfettoQueuedEvent)));
+  if (next == l_nullptr)
+    return LMPROF_REPORT_FAILURE;
+
+  queue->events = next;
+  queue->capacity = next_capacity;
+  return LUA_OK;
+}
+
+static int perfetto_queue_push(PerfettoEventQueue *queue, PerfettoQueuedEvent event) {
+  if (perfetto_queue_reserve(queue, queue->count + 1) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+
+  event.sequence = queue->count;
+  queue->events[queue->count++] = event;
+  return LUA_OK;
+}
+
+static int perfetto_queue_instant(PerfettoEventQueue *queue, uint64_t track_uuid, uint64_t timestamp_ns, const char *category, const char *name) {
+  PerfettoQueuedEvent event = LMPROF_ZERO_STRUCT;
+  event.type = PERFETTO_QUEUE_INSTANT;
+  event.timestamp_ns = timestamp_ns;
+  event.track_uuid = track_uuid;
+  event.category = category;
+  event.name = name;
+  return perfetto_queue_push(queue, event);
+}
+
+static int perfetto_queue_line_instant(PerfettoEventQueue *queue, uint64_t track_uuid, uint64_t timestamp_ns, const TraceEvent *source) {
+  PerfettoQueuedEvent event = LMPROF_ZERO_STRUCT;
+  event.type = PERFETTO_QUEUE_LINE_INSTANT;
+  event.event = source;
+  event.timestamp_ns = timestamp_ns;
+  event.track_uuid = track_uuid;
+  event.category = CHROME_USER_TIMING;
+  return perfetto_queue_push(queue, event);
+}
+
+static int perfetto_queue_counter(PerfettoEventQueue *queue, lua_Integer pid, uint64_t timestamp_ns, int64_t value) {
+  PerfettoQueuedEvent event = LMPROF_ZERO_STRUCT;
+  event.type = PERFETTO_QUEUE_COUNTER;
+  event.timestamp_ns = timestamp_ns;
+  event.pid = pid;
+  event.counter_value = value;
+  return perfetto_queue_push(queue, event);
+}
+
+static int perfetto_queue_slice(PerfettoEventQueue *queue, uint64_t track_uuid, uint64_t start_ns, uint64_t end_ns, const char *category, const char *name, unsigned int rank) {
+  PerfettoQueuedEvent begin = LMPROF_ZERO_STRUCT;
+  PerfettoQueuedEvent end = LMPROF_ZERO_STRUCT;
+
+  if (end_ns <= start_ns)
+    return perfetto_queue_instant(queue, track_uuid, start_ns, category, name);
+
+  begin.type = PERFETTO_QUEUE_SLICE_BEGIN;
+  begin.timestamp_ns = start_ns;
+  begin.start_ns = start_ns;
+  begin.end_ns = end_ns;
+  begin.track_uuid = track_uuid;
+  begin.category = category;
+  begin.name = name;
+  begin.rank = rank;
+
+  end.type = PERFETTO_QUEUE_SLICE_END;
+  end.timestamp_ns = end_ns;
+  end.start_ns = start_ns;
+  end.end_ns = end_ns;
+  end.track_uuid = track_uuid;
+  end.rank = rank;
+
+  if (perfetto_queue_push(queue, begin) != LUA_OK
+      || perfetto_queue_push(queue, end) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  return LUA_OK;
+}
+
+static int perfetto_write_queued_event(lmprof_Report *R, const PerfettoQueuedEvent *event) {
+  switch (event->type) {
+    case PERFETTO_QUEUE_SLICE_BEGIN:
+      return perfetto_write_slice_begin(R, event->track_uuid, event->timestamp_ns, event->category, event->name);
+    case PERFETTO_QUEUE_SLICE_END:
+      return perfetto_write_slice_end(R, event->track_uuid, event->timestamp_ns);
+    case PERFETTO_QUEUE_INSTANT:
+      return perfetto_write_instant(R, event->track_uuid, event->timestamp_ns, event->category, event->name);
+    case PERFETTO_QUEUE_LINE_INSTANT: {
+      char line_name[IDENTIFIER_BUFFER_LENGTH] = LMPROF_ZERO_STRUCT;
+      const TraceEvent *source = event->event;
+      const char *source_name = source != l_nullptr && source->data.line.info != l_nullptr
+                              ? source->data.line.info->source
+                              : LMPROF_RECORD_NAME_UNKNOWN;
+      const int line = source != l_nullptr ? source->data.line.line : 0;
+      if (snprintf(line_name, sizeof(line_name), "%s: Line %d", CHROME_OPT_NAME(source_name, LMPROF_RECORD_NAME_UNKNOWN), line) < 0)
+        LMPROF_LOG("<%s>:sprintf encoding error\n", __FUNCTION__);
+      return perfetto_write_instant(R, event->track_uuid, event->timestamp_ns, event->category, line_name);
+    }
+    case PERFETTO_QUEUE_COUNTER:
+      return perfetto_write_counter(R, event->pid, event->timestamp_ns, event->counter_value);
+    default:
+      return LMPROF_REPORT_FAILURE;
+  }
+}
+
 static int perfetto_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTimeline *list) {
   lmprof_State *st = R->st;
+  PerfettoEventQueue queue = LMPROF_ZERO_STRUCT;
   TraceEventPage *page = l_nullptr;
   TraceEvent *samples = l_nullptr;
   TraceEventBounds bounds;
   int has_run_task = 0;
+  int result = LUA_OK;
 
   size_t counter = 0;
   size_t counterFrequency = TRACE_EVENT_COUNTER_FREQ;
@@ -1719,7 +1920,6 @@ static int perfetto_traceevent_report(lua_State *L, lmprof_Report *R, TraceEvent
     counterFrequency = l_cast(size_t, st->i.counterFrequency);
 
   if (BITFIELD_TEST(st->conf, LMPROF_OPT_TRACE_COMPRESS)) {
-    int result;
     TraceEventCompressOpts opts;
     opts.id.pid = 0;
     opts.id.tid = 0;
@@ -1734,12 +1934,17 @@ static int perfetto_traceevent_report(lua_State *L, lmprof_Report *R, TraceEvent
     return LMPROF_REPORT_FAILURE;
 
   has_run_task = traceevent_find_bounds(st, list, &bounds);
-  if (has_run_task && perfetto_write_slice_begin(R,
+  if (has_run_task) {
+    result = perfetto_queue_slice(&queue,
         perfetto_thread_uuid(st->thread.mainproc.pid, st->thread.mainproc.tid),
-        perfetto_time_ns(st, bounds.start),
+        perfetto_adjusted_time_ns(st, bounds.start),
+        perfetto_adjusted_time_ns(st, bounds.end),
         CHROME_TIMLINE,
-        CHROME_NAME_RUN_TASK) != LUA_OK)
-    return LMPROF_REPORT_FAILURE;
+        CHROME_NAME_RUN_TASK,
+        PERFETTO_QUEUE_RANK_RUN_TASK);
+    if (result != LUA_OK)
+      goto done;
+  }
 
   for (page = list->head; page != l_nullptr; page = page->next) {
     size_t i;
@@ -1751,86 +1956,105 @@ static int perfetto_traceevent_report(lua_State *L, lmprof_Report *R, TraceEvent
 
       switch (op) {
         case BEGIN_FRAME:
-          if (perfetto_write_instant(R, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "BeginFrame") != LUA_OK)
-            return LMPROF_REPORT_FAILURE;
+          result = perfetto_queue_instant(&queue, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "BeginFrame");
+          if (result != LUA_OK)
+            goto done;
           break;
         case END_FRAME:
-          if (perfetto_write_instant(R, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "ActivateLayerTree") != LUA_OK
-              || perfetto_write_instant(R, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "DrawFrame") != LUA_OK)
-            return LMPROF_REPORT_FAILURE;
+          if (perfetto_queue_instant(&queue, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "ActivateLayerTree") != LUA_OK
+              || perfetto_queue_instant(&queue, track_uuid, timestamp_ns, CHROME_TIMELINE_FRAME, "DrawFrame") != LUA_OK) {
+            result = LMPROF_REPORT_FAILURE;
+            goto done;
+          }
           break;
         case BEGIN_ROUTINE:
-          if (perfetto_write_slice_begin(R, track_uuid, timestamp_ns, CHROME_TIMLINE, __threadName(L, R, event)) != LUA_OK)
-            return LMPROF_REPORT_FAILURE;
-          break;
         case END_ROUTINE:
-          if (perfetto_write_slice_end(R, track_uuid, timestamp_ns) != LUA_OK)
-            return LMPROF_REPORT_FAILURE;
           break;
-        case LINE_SCOPE: {
-          char line_name[IDENTIFIER_BUFFER_LENGTH] = LMPROF_ZERO_STRUCT;
-          if (snprintf(line_name, sizeof(line_name), "%s: Line %d",
-                CHROME_OPT_NAME(event->data.line.info->source, LMPROF_RECORD_NAME_UNKNOWN),
-                event->data.line.line) < 0)
-            LMPROF_LOG("<%s>:sprintf encoding error\n", __FUNCTION__);
-          if (perfetto_write_instant(R, track_uuid, timestamp_ns, CHROME_USER_TIMING, line_name) != LUA_OK)
-            return LMPROF_REPORT_FAILURE;
+        case LINE_SCOPE:
+          result = perfetto_queue_line_instant(&queue, track_uuid, timestamp_ns, event);
+          if (result != LUA_OK)
+            goto done;
           break;
-        }
         case SAMPLE_EVENT:
           if (samples != l_nullptr) {
             const uint64_t sample_track = perfetto_thread_uuid(st->thread.mainproc.pid, LMPROF_THREAD_SAMPLE_TIMELINE);
-            if (perfetto_write_slice_begin(R, sample_track, perfetto_time_ns(st, samples->call.s.time), CHROME_TIMLINE, "EvaluateScript") != LUA_OK
-                || perfetto_write_slice_end(R, sample_track, timestamp_ns) != LUA_OK)
-              return LMPROF_REPORT_FAILURE;
+            result = perfetto_queue_slice(&queue,
+                sample_track,
+                perfetto_time_ns(st, samples->call.s.time),
+                timestamp_ns,
+                CHROME_TIMLINE,
+                "EvaluateScript",
+                PERFETTO_QUEUE_RANK_SCOPE);
+            if (result != LUA_OK)
+              goto done;
           }
           samples = event;
           break;
         case ENTER_SCOPE:
           if (event->data.event.sibling != l_nullptr) {
-            if (perfetto_write_slice_begin(R, track_uuid, timestamp_ns, CHROME_TIMLINE, CHROME_EVENT_NAME(event)) != LUA_OK)
-              return LMPROF_REPORT_FAILURE;
+            result = perfetto_queue_slice(&queue,
+                track_uuid,
+                timestamp_ns,
+                perfetto_time_ns(st, event->data.event.sibling->call.s.time),
+                CHROME_TIMLINE,
+                CHROME_EVENT_NAME(event),
+                PERFETTO_QUEUE_RANK_SCOPE);
+            if (result != LUA_OK)
+              goto done;
           }
           if (BITFIELD_TEST(st->mode, LMPROF_MODE_MEMORY) && (counterFrequency == 1 || ((++counter) % counterFrequency) == 0)) {
-            if (perfetto_write_counter(R, event->call.proc.pid, timestamp_ns, l_cast(int64_t, unit_allocated(&event->call.s))) != LUA_OK)
-              return LMPROF_REPORT_FAILURE;
+            result = perfetto_queue_counter(&queue, event->call.proc.pid, timestamp_ns, l_cast(int64_t, unit_allocated(&event->call.s)));
+            if (result != LUA_OK)
+              goto done;
             counter = 0;
           }
           break;
         case EXIT_SCOPE:
-          if (event->data.event.sibling != l_nullptr) {
-            if (perfetto_write_slice_end(R, track_uuid, timestamp_ns) != LUA_OK)
-              return LMPROF_REPORT_FAILURE;
-          }
           if (BITFIELD_TEST(st->mode, LMPROF_MODE_MEMORY) && (counterFrequency == 1 || ((++counter) % counterFrequency) == 0)) {
-            if (perfetto_write_counter(R, event->call.proc.pid, timestamp_ns, l_cast(int64_t, unit_allocated(&event->call.s))) != LUA_OK)
-              return LMPROF_REPORT_FAILURE;
+            result = perfetto_queue_counter(&queue, event->call.proc.pid, timestamp_ns, l_cast(int64_t, unit_allocated(&event->call.s)));
+            if (result != LUA_OK)
+              goto done;
             counter = 0;
           }
           break;
         case PROCESS:
           if (perfetto_write_process_track(R, event->call.proc.pid, event->data.process.name) != LUA_OK
-              || perfetto_write_memory_counter_track(R, event->call.proc.pid) != LUA_OK)
-            return LMPROF_REPORT_FAILURE;
+              || perfetto_write_memory_counter_track(R, event->call.proc.pid) != LUA_OK) {
+            result = LMPROF_REPORT_FAILURE;
+            goto done;
+          }
           break;
         case THREAD:
-          if (perfetto_write_thread_track(R, event->call.proc.pid, event->call.proc.tid, event->data.process.name) != LUA_OK)
-            return LMPROF_REPORT_FAILURE;
+          if (perfetto_write_thread_track(R, event->call.proc.pid, event->call.proc.tid, event->data.process.name) != LUA_OK) {
+            result = LMPROF_REPORT_FAILURE;
+            goto done;
+          }
           break;
         case IGNORE_SCOPE:
           break;
         default:
-          return LMPROF_REPORT_FAILURE;
+          result = LMPROF_REPORT_FAILURE;
+          goto done;
       }
     }
   }
 
-  if (has_run_task && perfetto_write_slice_end(R,
-        perfetto_thread_uuid(st->thread.mainproc.pid, st->thread.mainproc.tid),
-        perfetto_time_ns(st, bounds.end)) != LUA_OK)
-    return LMPROF_REPORT_FAILURE;
+  if (queue.count > 1)
+    qsort(queue.events, queue.count, sizeof(PerfettoQueuedEvent), perfetto_queue_compare);
 
-  return LUA_OK;
+  {
+    size_t i;
+    for (i = 0; i < queue.count; ++i) {
+      if (perfetto_write_queued_event(R, &queue.events[i]) != LUA_OK) {
+        result = LMPROF_REPORT_FAILURE;
+        goto done;
+      }
+    }
+  }
+
+done:
+  free(queue.events);
+  return result;
 }
 
 /*
@@ -2691,8 +2915,8 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
   }
 
   if (traceevent_find_bounds(st, list, &bounds)) {
-    const int64_t start = l_cast(int64_t, perfetto_time_ns(st, bounds.start));
-    const int64_t end = l_cast(int64_t, perfetto_time_ns(st, bounds.end));
+    const int64_t start = l_cast(int64_t, perfetto_adjusted_time_ns(st, bounds.start));
+    const int64_t end = l_cast(int64_t, perfetto_adjusted_time_ns(st, bounds.end));
     if (tracy_export_add_zone(&E, l_cast(uint64_t, st->thread.mainproc.tid), CHROME_NAME_RUN_TASK, "", 0, start, end) == l_nullptr) {
       result = LMPROF_REPORT_FAILURE;
       goto done;

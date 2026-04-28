@@ -39,7 +39,6 @@ lua lmprof/scripts/script.lua --input=example.lua --trace --memory --outputs=mem
 
 After loading a trace, expand the main thread track and zoom into the recorded range. The top-level task is shown as `RunTask`; lmprof scopes are nested under it. Typical scopes include:
 
-* `Main`
 * `update (lmprof/scripts/lmprof_helper.lua:49)`
 * `get_state [C]`
 * `begin_frame [C]`
@@ -55,7 +54,7 @@ After loading a trace, expand the main thread track and zoom into the recorded r
 
 Many scopes are very short, often microseconds, so they may not show labels until you zoom in. Use search to find a scope name such as `draw [C]` or `update`.
 
-When memory profiling is enabled, the trace includes a `LuaMemory` counter track.
+When memory profiling is enabled, the trace includes an `UpdateCounters LuaMemory` counter track.
 
 ### Tracy output
 
