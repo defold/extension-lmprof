@@ -3232,6 +3232,16 @@ static LUA_INLINE int lmprof_push_report(lua_State *L, lmprof_Report *report) {
   return LMPROF_REPORT_FAILURE;
 }
 
+static lmprof_TraceFileFormat lmprof_trace_file_format(lmprof_State *st, const char *file) {
+  if (BITFIELD_TEST(st->mode, LMPROF_MODE_TRACE)) {
+    if (lmprof_path_ends_with_tracy(file))
+      return LMPROF_TRACE_FILE_TRACY;
+    if (!lmprof_path_ends_with_json(file))
+      return LMPROF_TRACE_FILE_PERFETTO;
+  }
+  return LMPROF_TRACE_FILE_JSON;
+}
+
 LUA_API void lmprof_report_initialize(lua_State *L) {
 #if defined(LMPROF_FILE_API)
   static const luaL_Reg metameth[] = {
@@ -3251,6 +3261,26 @@ LUA_API void lmprof_report_initialize(lua_State *L) {
 #else
   ((void)L);
 #endif
+}
+
+LUA_API int lmprof_report_file_binary(lmprof_State *st, const char *file) {
+  return lmprof_trace_file_format(st, file) != LMPROF_TRACE_FILE_JSON;
+}
+
+LUA_API int lmprof_report_file(lua_State *L, lmprof_State *st, FILE *file, const char *path) {
+  lmprof_Report report;
+
+  if (file == l_nullptr || path == l_nullptr)
+    return LMPROF_REPORT_FAILURE;
+
+  report.st = st;
+  report.type = lFile;
+  report.f.file = file;
+  report.f.delim = 0;
+  report.f.binary = lmprof_trace_file_format(st, path);
+  report.f.path = path;
+  report.f.indent = "";
+  return lmprof_push_report(L, &report);
 }
 
 LUA_API int lmprof_report(lua_State *L, lmprof_State *st, lmprof_ReportType type, const char *file) {
@@ -3288,26 +3318,10 @@ LUA_API int lmprof_report(lua_State *L, lmprof_State *st, lmprof_ReportType type
 #if defined(LMPROF_FILE_API)
     FILE **pf;
     int result = LUA_OK;
-    lmprof_TraceFileFormat trace_file_format = LMPROF_TRACE_FILE_JSON;
-    const int trace_mode = BITFIELD_TEST(st->mode, LMPROF_MODE_TRACE);
-    int trace_binary = 0;
-    if (trace_mode) {
-      if (lmprof_path_ends_with_tracy(file))
-        trace_file_format = LMPROF_TRACE_FILE_TRACY;
-      else if (!lmprof_path_ends_with_json(file))
-        trace_file_format = LMPROF_TRACE_FILE_PERFETTO;
-      trace_binary = trace_file_format != LMPROF_TRACE_FILE_JSON;
-    }
     if (file == l_nullptr)
       result = LMPROF_REPORT_FAILURE;
-    else if ((pf = io_fud(L, file, trace_binary ? "wb" : "w")) != l_nullptr) { /* [..., io_ud] */
-      report.type = lFile;
-      report.f.file = *pf;
-      report.f.delim = 0;
-      report.f.binary = trace_file_format;
-      report.f.path = file;
-      report.f.indent = "";
-      result = lmprof_push_report(L, &report);
+    else if ((pf = io_fud(L, file, lmprof_report_file_binary(st, file) ? "wb" : "w")) != l_nullptr) { /* [..., io_ud] */
+      result = lmprof_report_file(L, st, *pf, file);
       if (fclose(*pf) == 0) {
         *pf = l_nullptr; /* marked as closed */
         lua_pushnil(L); /* preemptively remove finalizer */

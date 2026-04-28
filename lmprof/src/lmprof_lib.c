@@ -24,6 +24,7 @@ extern "C" {
 #include "lmprof_state.h"
 #include "lmprof.h"
 #include "lmprof_report.h"
+#include "lmprof_writer.h"
 #include "lmprof_lib.h"
 #include "script_bitop.h"
 
@@ -831,93 +832,55 @@ static LUA_INLINE lmprof_ReportType report_type(lua_State *L, lmprof_State *st, 
   return type;
 }
 
-static int report_path_ends_with(const char *file, const char *ext) {
-  size_t i;
-  const size_t file_len = strlen(file);
-  const size_t ext_len = strlen(ext);
+typedef struct lmprof_ReportWriteContext {
+  lua_State *L;
+  lmprof_State *st;
+} lmprof_ReportWriteContext;
 
-  if (file_len < ext_len)
-    return 0;
-
-  file += file_len - ext_len;
-  for (i = 0; i < ext_len; ++i) {
-    char left = file[i];
-    char right = ext[i];
-    if (left >= 'A' && left <= 'Z')
-      left = l_cast(char, left + ('a' - 'A'));
-    if (right >= 'A' && right <= 'Z')
-      right = l_cast(char, right + ('a' - 'A'));
-    if (left != right)
-      return 0;
-  }
-  return 1;
+static int lmprof_writer_report_callback(FILE *file, const char *path, void *ctx) {
+  lmprof_ReportWriteContext *context = l_pcast(lmprof_ReportWriteContext *, ctx);
+  return lmprof_report_file(context->L, context->st, file, path);
 }
 
-static const char *report_file_format(const char *file) {
-  if (report_path_ends_with(file, ".json"))
-    return "JSON";
-  if (report_path_ends_with(file, ".tracy"))
-    return "Tracy";
-  if (report_path_ends_with(file, ".perfetto-trace"))
-    return "Perfetto";
-  return "file";
-}
-
-static void report_file_log(lua_State *L, const char *status, const char *format, const char *file) {
-  const int top = lua_gettop(L);
-
-  if (!lua_checkstack(L, 3))
-    return;
-
-  lua_getglobal(L, "print"); /* [..., print] */
-  if (lua_isfunction(L, -1)) {
-    lua_pushfstring(L, "lmprof: %s writing %s profile: %s", status, format, file);
-    if (lua_pcall(L, 1, 0, 0) != LUA_OK)
-      lua_settop(L, top);
-  }
-  lua_settop(L, top);
-}
-
-static int report_file(lua_State *L, lmprof_State *st, const char *file) {
-  const char *format = report_file_format(file);
-  int success;
-
-  report_file_log(L, "start", format, file);
-  lmprof_report(L, st, lFile, file); /* [..., ok] */
-  success = lua_toboolean(L, -1);
-  report_file_log(L, success ? "finished" : "failed", format, file);
-  return lua_type(L, -1);
-}
-
-static int report_file_list(lua_State *L, lmprof_State *st, int file_idx) {
-  int success = 1;
-  int wrote = 0;
-  const int paths = lua_absindex(L, file_idx);
-
-  lua_pushnil(L); /* [..., nil] */
-  while (lua_next(L, paths) != 0) { /* [..., key, value] */
-    if (lua_type(L, -1) == LUA_TSTRING) {
-      const char *file = lua_tostring(L, -1);
-      report_file(L, st, file); /* [..., key, value, ok] */
-      success = success && lua_toboolean(L, -1);
-      wrote = 1;
-      lua_pop(L, 2); /* [..., key] */
-    }
-    else {
-      success = 0;
-      lua_pop(L, 1); /* [..., key] */
-    }
-  }
-
-  lua_pushboolean(L, success && wrote);
-  return lua_type(L, -1);
+static int lmprof_write_outputs(lua_State *L, lmprof_State *st, const lmprof_WriterOutput *outputs, size_t output_count) {
+  lmprof_ReportWriteContext context;
+  context.L = L;
+  context.st = st;
+  return lmprof_writer_write(outputs, output_count, lmprof_writer_report_callback, &context);
 }
 
 static int push_report(lua_State *L, lmprof_State *st, lmprof_ReportType type, int file_idx, const char *file) {
-  if (type == lFile && file_idx != 0 && lua_type(L, file_idx) == LUA_TTABLE)
-    return report_file_list(L, st, file_idx);
-  if (type == lFile && file != l_nullptr)
-    return report_file(L, st, file);
+  if (type == lFile && file_idx != 0 && lua_type(L, file_idx) == LUA_TTABLE) {
+    int success = 1;
+    int wrote = 0;
+    const int paths = lua_absindex(L, file_idx);
+
+    lua_pushnil(L); /* [..., nil] */
+    while (lua_next(L, paths) != 0) { /* [..., key, value] */
+      if (lua_type(L, -1) == LUA_TSTRING) {
+        const char *path = lua_tostring(L, -1);
+        lmprof_WriterOutput output;
+        output.path = path;
+        output.binary = lmprof_report_file_binary(st, path);
+        success = success && (lmprof_write_outputs(L, st, &output, 1) == LMPROF_WRITER_OK);
+        wrote = 1;
+      }
+      else {
+        success = 0;
+      }
+      lua_pop(L, 1); /* [..., key] */
+    }
+
+    lua_pushboolean(L, success && wrote);
+    return lua_type(L, -1);
+  }
+  if (type == lFile && file != l_nullptr) {
+    lmprof_WriterOutput output;
+    output.path = file;
+    output.binary = lmprof_report_file_binary(st, file);
+    lua_pushboolean(L, lmprof_write_outputs(L, st, &output, 1) == LMPROF_WRITER_OK);
+    return lua_type(L, -1);
+  }
   return lmprof_report(L, st, type, file);
 }
 
@@ -928,6 +891,54 @@ static int stop_profiler(lua_State *L, lmprof_State *st, int file_idx) {
   push_report(L, st, type, file_idx, file);
   lmprof_shutdown_profiler(L, st);
   return 1;
+}
+
+static int stop_profiler_default_files(lua_State *L, lmprof_State *st) {
+  size_t i;
+  const char *paths[1];
+  lmprof_WriterOutput outputs[1];
+  const size_t output_count = lmprof_writer_default_output_paths(paths, sizeof(paths) / sizeof(paths[0]));
+
+  if (output_count == 0)
+    return luaL_error(L, "Could not stop profiler: invalid output list");
+
+  for (i = 0; i < output_count; ++i) {
+    outputs[i].path = paths[i];
+    outputs[i].binary = lmprof_report_file_binary(st, paths[i]);
+  }
+
+  lmprof_finalize_profiler(L, st, 1);
+  if (lmprof_write_outputs(L, st, outputs, output_count) != LMPROF_WRITER_OK) {
+    lmprof_shutdown_profiler(L, st);
+    return luaL_error(L, "Could not stop profiler: failure writing output");
+  }
+  lmprof_shutdown_profiler(L, st);
+  return 0;
+}
+
+static int stop_profiler_to_files(lua_State *L, lmprof_State *st, int file_idx) {
+  const int paths = (file_idx != 0 && lua_type(L, file_idx) != LUA_TNONE) ? lua_absindex(L, file_idx) : 0;
+  const int file_type = paths == 0 ? LUA_TNIL : lua_type(L, paths);
+
+  if (file_type == LUA_TNIL || file_type == LUA_TNONE)
+    return stop_profiler_default_files(L, st);
+
+  if (file_type == LUA_TSTRING || file_type == LUA_TTABLE) {
+    int success;
+    const char *file = file_type == LUA_TSTRING ? lua_tostring(L, paths) : l_nullptr;
+
+    lmprof_finalize_profiler(L, st, 1);
+    push_report(L, st, lFile, paths, file);
+    success = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    lmprof_shutdown_profiler(L, st);
+
+    if (!success)
+      return luaL_error(L, "Could not stop profiler: failure writing output");
+    return 0;
+  }
+
+  return luaL_error(L, "Could not stop profiler: expected output path string or table");
 }
 
 static int stack_object_profiler(lua_State *L, lmprof_State *active_state, int forcedMode, int forcedOpts, int state_idx, int args_top) {
@@ -1478,6 +1489,14 @@ static int state_stop(lua_State *L) {
   return luaL_error(L, "Could not stop profiler: profiler state inactive");
 }
 
+static int state_stop_to_files(lua_State *L) {
+  lmprof_State *st = state_get(L, 1);
+  if (st == lmprof_singleton(L))
+    return stop_profiler_to_files(L, st, 2);
+
+  return luaL_error(L, "Could not stop profiler: profiler state inactive");
+}
+
 static int state_quit(lua_State *L) {
   lmprof_State *st = state_get(L, 1);
   if (st == lmprof_singleton(L))
@@ -1549,6 +1568,7 @@ static void lmprof_state_initialize(lua_State *L) {
   static const luaL_Reg metameth[] = {
     { "start", state_start },
     { "stop", state_stop },
+    { "stop_to_files", state_stop_to_files },
     { "quit", state_quit },
     { "calibrate", state_calibrate },
     /* Profiler options */
@@ -1629,6 +1649,14 @@ LUALIB_API int lmprof_stop(lua_State *L) {
   return luaL_error(L, "Could not stop profiler: profiler state does not exist.");
 }
 
+LUALIB_API int lmprof_stop_to_files(lua_State *L) {
+  lmprof_State *st = lmprof_singleton(L);
+  if (st != l_nullptr)
+    return stop_profiler_to_files(L, st, 1);
+
+  return luaL_error(L, "Could not stop profiler: profiler state does not exist.");
+}
+
 LUALIB_API int lmprof_quit(lua_State *L) {
   lmprof_State *st = lmprof_singleton(L);
   if (st != l_nullptr)
@@ -1688,6 +1716,7 @@ LUAMOD_API int luaopen_lmprof(lua_State *L) {
     { "create", lmprof_create },
     { "start", lmprof_start },
     { "stop", lmprof_stop },
+    { "stop_to_files", lmprof_stop_to_files },
     { "quit", lmprof_quit },
     /* Global profiler options */
     { "set_option", lmprof_set_option },

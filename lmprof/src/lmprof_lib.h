@@ -116,6 +116,13 @@ LUALIB_API int lmprof_start(lua_State *L);
 */
 LUALIB_API int lmprof_stop(lua_State *L);
 
+/*
+** stop_to_files([output_path]): Stop the profiler singleton and write through
+**  the native writer. If no output_path is supplied, the extension's native
+**  default output file is used.
+*/
+LUALIB_API int lmprof_stop_to_files(lua_State *L);
+
 /* quit(): Preempt any active profiler state without reporting its results. */
 LUALIB_API int lmprof_quit(lua_State *L);
 

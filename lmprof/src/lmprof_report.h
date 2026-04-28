@@ -183,6 +183,12 @@ typedef struct lmprof_Report {
 /* Initialize LMPROF_IO_METATABLE */
 LUA_API void lmprof_report_initialize(lua_State *L);
 
+/* Return non-zero when a file report should be opened in binary mode. */
+LUA_API int lmprof_report_file_binary(lmprof_State *st, const char *file);
+
+/* Write a file report into an already-open file stream. */
+LUA_API int lmprof_report_file(lua_State *L, lmprof_State *st, FILE *file, const char *path);
+
 /*
 ** Generate a 'report' for the given profiler state, returning the type of the
 ** 'reported' object. See the format specification above.
