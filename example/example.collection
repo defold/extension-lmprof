@@ -21,7 +21,7 @@ embedded_instances {
   "    type: PROPERTY_TYPE_BOOLEAN\n"
   "  }\n"
   "  properties {\n"
-  "    id: \"write_all_fromats\"\n"
+  "    id: \"write_all_formats\"\n"
   "    value: \"true\"\n"
   "    type: PROPERTY_TYPE_BOOLEAN\n"
   "  }\n"
