@@ -1,50 +1,5 @@
 local M = {}
 
-local function is_absolute_path(filename)
-    if type(filename) ~= "string" then
-        return false
-    end
-    return filename:sub(1, 1) == "/" or filename:sub(1, 1) == "\\" or filename:match("^%a:[/\\]") ~= nil
-end
-
-local function path_join(path, filename)
-    if path == nil or path == "" or is_absolute_path(filename) then
-        return filename
-    end
-
-    local separator = path:sub(-1)
-    if separator == "/" or separator == "\\" then
-        return path..filename
-    end
-
-    return path.."/"..filename
-end
-
-local function project_id()
-    if type(sys) == "table" then
-        local getters = { "get_config_string", "get_config" }
-        for _, getter in ipairs(getters) do
-            if type(sys[getter]) == "function" then
-                local ok, value = pcall(sys[getter], "project.title", "lmprof")
-                if ok and type(value) == "string" and value ~= "" then
-                    return value
-                end
-            end
-        end
-    end
-    return "lmprof"
-end
-
-local function save_path(filename)
-    if is_absolute_path(filename) then
-        return filename
-    end
-    if type(sys) == "table" and type(sys.get_save_file) == "function" then
-        return sys.get_save_file(project_id(), filename)
-    end
-    return filename
-end
-
 local function is_json(filename)
     return type(filename) == "string" and filename:lower():sub(-5) == ".json"
 end
@@ -61,15 +16,15 @@ local function output_paths(filename, path)
     if type(filename) == "table" then
         local outputs = {}
         for i, name in ipairs(filename) do
-            outputs[i] = path == nil and save_path(name) or path_join(path, name)
+            outputs[i] = path..name
         end
         return outputs
     end
-    return path == nil and save_path(filename) or path_join(path, filename)
+    return path..filename
 end
 
 local function no_c_calls_path(filename)
-    return filename:gsub("([^/\\]+)$", "no_c_calls_%1")
+    return filename:gsub("([^/]+)$", "no_c_calls_%1")
 end
 
 local function remove_c_calls_from_json(filename)
@@ -83,6 +38,7 @@ local function remove_c_calls_from_json(filename)
 end
 
 function M.stop(filename, path, remove_c_calls)
+    path = path and path or ""
     local fullpath = output_paths(filename, path)
     if not _G.profilerlmprof:stop(fullpath) then
         error("Failure!")
