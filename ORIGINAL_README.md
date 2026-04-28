@@ -36,7 +36,7 @@ Creating *events* that can be used to generate flamegraphs, e.g., [Perfetto UI](
 
 1. Trace Events are post-processed, e.g., (1) times shifted to zero to avoid potential down-casting issues; and (2) `LUA_HOOKCALL/LUA_HOOKRET` event pairings that fall under a certain execution threshold are optionally suppressed.
 
-1. Trace Events can then be formatted into a Lua table or application specific representation. File output uses Perfetto binary by default; use an output path ending in `.json` for DevTools compatible JSON or `.tracy` for Tracy native captures.
+1. Trace Events can then be formatted into a Lua table or application specific representation. File output uses Perfetto binary by default; use an output path ending in `.json` for DevTools compatible JSON or `.tracy` for Tracy native captures. Pass an array of output paths to write multiple formats from the same profile.
 
 ## Documentation
 The exported API is broken down into four categories: **Configuration**, **Profiling**, **Miscellaneous**, and **Local State**. See **Developer Notes** for implementation details/caveats.
@@ -189,11 +189,12 @@ state = lmprof.start(...)
 --  lmprof_report.h contains the specifications for the different "result"
 --  structures depending on the profile mode.
 --
---  output_path - a file-path string where the formatted results are written.
---    For 'graph' profiling, the generated output is a Lua compatible table that
---    can be loaded with 'require' or 'dofile'. Meanwhile, 'trace' profiling
---    writes Perfetto binary traces by default. Use a ".json" output path for
---    Chrome Trace Event JSON or ".tracy" for Tracy native capture output.
+--  output_path - a file-path string, or array of file-path strings, where the
+--    formatted results are written. For 'graph' profiling, the generated output
+--    is a Lua compatible table that can be loaded with 'require' or 'dofile'.
+--    Meanwhile, 'trace' profiling writes Perfetto binary traces by default. Use
+--    a ".json" output path for Chrome Trace Event JSON or ".tracy" for Tracy
+--    native capture output.
 --
 -- *NOTE*: output_path requires LMPROF_FILE_API to be enabled (see 'has_io').
 result = lmprof.stop([output_path])

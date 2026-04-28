@@ -130,7 +130,8 @@
 ** RECORDS: Table and string output use a Chrome Trace Event compatible layout.
 **  File output uses Perfetto TrackEvent protobuf by default, falls back to
 **  Chrome Trace Event JSON when the requested output path ends in ".json", and
-**  writes Tracy native captures when the output path ends in ".tracy".
+**  writes Tracy native captures when the output path ends in ".tracy". Passing
+**  an array of output paths writes each requested format from the same timeline.
 **  Perfetto traces can be loaded into:
 **    https://ui.perfetto.dev
 */

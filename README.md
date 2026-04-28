@@ -21,6 +21,18 @@ Specify properties:
 
 lmprof saves Perfetto binary traces by default. The helper script writes `mem.perfetto-trace` unless you pass a custom filename. Use a filename ending in `.tracy` to write a native Tracy capture instead.
 
+To compare exporters from the same profiling session, pass multiple filenames:
+
+```lua
+lmprof_helper.stop({ "mem.perfetto-trace", "mem.json", "mem.tracy" })
+```
+
+The command-line helper also accepts multiple outputs:
+
+```sh
+lua lmprof/scripts/script.lua --input=example.lua --trace --memory --outputs=mem.perfetto-trace,mem.json,mem.tracy
+```
+
 * Open [ui.perfetto.dev](https://ui.perfetto.dev)
 * Choose `Open trace file`
 * Load the generated `.perfetto-trace` file
@@ -54,6 +66,8 @@ If you prefer the Tracy profiler, pass an output filename ending in `.tracy`. Th
 If you need Chrome Trace Event JSON for older tools, pass an output filename ending in `.json`. JSON traces can be opened in Chrome DevTools `Performance` or processed by [stat.py](https://github.com/defold/extension-lmprof/blob/master/stat.py).
 
 >stat.py my.json
+
+Perfetto's `traceconv` converts Perfetto protobuf traces to Chrome JSON, but it does not convert Chrome JSON back to a TrackEvent protobuf trace. If you need binary Perfetto output for comparison, write `.perfetto-trace` and `.json` from the same lmprof run.
 
 ---
 If you have any issues, questions or suggestions please [create an issue](https://github.com/defold/extension-lmprof/issues)

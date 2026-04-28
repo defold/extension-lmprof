@@ -1,0 +1,22 @@
+{
+  :code {
+    :breakpoints [
+    ]
+  }
+  :workflow {
+    :recent-files [
+      [
+        "/lmprof/scripts/lmprof_helper.lua"
+        :code
+      ]
+      [
+        "/example/example.collection"
+        :scene
+      ]
+      [
+        "/lmprof/scripts/lmprof.script"
+        :code
+      ]
+    ]
+  }
+}

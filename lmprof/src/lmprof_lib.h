@@ -106,11 +106,11 @@ LUALIB_API int lmprof_start(lua_State *L);
 **  lmprof_report.h contains the specifications for the different "result"
 **  structures depending on the profile mode.
 **
-**  output_path - a file-path string where the formatted results are written.
-**    For 'graph' profiling, the generated output is a Lua compatible table that
-**    can be loaded with 'require' or 'dofile'. Meanwhile, 'trace' profiling
-**    writes Perfetto binary traces by default. Use a ".json" output path for
-**    Chrome Trace Event JSON.
+**  output_path - a file-path string, or an array of file-path strings, where
+**    the formatted results are written. For 'graph' profiling, the generated
+**    output is a Lua compatible table that can be loaded with 'require' or
+**    'dofile'. Meanwhile, 'trace' profiling writes Perfetto binary traces by
+**    default. Use a ".json" output path for Chrome Trace Event JSON.
 **
 ** @NOTE: output_path requires LMPROF_FILE_API to be enabled (see 'has_io').
 */
@@ -126,10 +126,10 @@ LUALIB_API int lmprof_quit(lua_State *L);
 ** Placing the result of the profiling (see lmprof_stop) onto the stack. Note,
 ** all trailing arguments correspond to its mode (see lmprof_start).
 **
-**  output_path - Optional filepath to write formatted results, see 'stop'. All
-**    other arguments correspond to its mode. This function require an explicit
-**    'nil' output_path parameter to denote the result is to be returned as a
-**    Lua object.
+**  output_path - Optional filepath, or array of filepaths, to write formatted
+**    results, see 'stop'. All other arguments correspond to its mode. This
+**    function require an explicit 'nil' output_path parameter to denote the
+**    result is to be returned as a Lua object.
 **
 ** @NOTE: output_path requires LMPROF_FILE_API to be enabled (see 'has_io').
 */

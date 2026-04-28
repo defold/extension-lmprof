@@ -820,6 +820,9 @@ static LUA_INLINE lmprof_ReportType report_type(lua_State *L, lmprof_State *st, 
     if (out_file != l_nullptr)
       *out_file = lua_tostring(L, file_idx);
   }
+  else if (file_idx != 0 && lua_type(L, file_idx) == LUA_TTABLE) {
+    type = lFile;
+  }
   else if (BITFIELD_TEST(st->conf, LMPROF_OPT_REPORT_STRING)) {
     type = lBuffer;
   }
@@ -827,11 +830,41 @@ static LUA_INLINE lmprof_ReportType report_type(lua_State *L, lmprof_State *st, 
   return type;
 }
 
+static int report_file_list(lua_State *L, lmprof_State *st, int file_idx) {
+  int success = 1;
+  int wrote = 0;
+  const int paths = lua_absindex(L, file_idx);
+
+  lua_pushnil(L); /* [..., nil] */
+  while (lua_next(L, paths) != 0) { /* [..., key, value] */
+    if (lua_type(L, -1) == LUA_TSTRING) {
+      const char *file = lua_tostring(L, -1);
+      lmprof_report(L, st, lFile, file); /* [..., key, value, ok] */
+      success = success && lua_toboolean(L, -1);
+      wrote = 1;
+      lua_pop(L, 2); /* [..., key] */
+    }
+    else {
+      success = 0;
+      lua_pop(L, 1); /* [..., key] */
+    }
+  }
+
+  lua_pushboolean(L, success && wrote);
+  return lua_type(L, -1);
+}
+
+static int push_report(lua_State *L, lmprof_State *st, lmprof_ReportType type, int file_idx, const char *file) {
+  if (type == lFile && file_idx != 0 && lua_type(L, file_idx) == LUA_TTABLE)
+    return report_file_list(L, st, file_idx);
+  return lmprof_report(L, st, type, file);
+}
+
 static int stop_profiler(lua_State *L, lmprof_State *st, int file_idx) {
   const char *file = l_nullptr;
   const lmprof_ReportType type = report_type(L, st, file_idx, &file);
   lmprof_finalize_profiler(L, st, 1);
-  lmprof_report(L, st, type, file);
+  push_report(L, st, type, file_idx, file);
   lmprof_shutdown_profiler(L, st);
   return 1;
 }
@@ -868,7 +901,7 @@ static int stack_object_profiler(lua_State *L, lmprof_State *active_state, int f
       const lmprof_ReportType type = report_type(L, st, file_idx, &file);
 
       lmprof_finalize_profiler(L, st, 1);
-      lmprof_report(L, st, type, file);
+      push_report(L, st, type, file_idx, file);
 
       /* If the profiler state was created in this function; destroy it. */
       lmprof_shutdown_profiler(L, st);
