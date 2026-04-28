@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include "lmprof_conf.h"
+#include "dlib/lz4.h"
 
 #include "collections/lmprof_record.h"
 #include "collections/lmprof_traceevent.h"
@@ -2077,7 +2078,7 @@ done:
 #define TRACY_STRINGREF_INACTIVE 0
 #define TRACY_STRINGREF_IDX_ACTIVE 3
 #define TRACY_PLOT_TYPE_USER 0
-#define TRACY_PLOT_FORMAT_MEMORY 1
+#define TRACY_PLOT_FORMAT_NUMBER 0
 
 typedef struct TracyFileWriter {
   FILE *file;
@@ -2125,6 +2126,9 @@ typedef struct TracyThread {
 } TracyThread;
 
 typedef struct TracyFrameSet {
+  char *name;
+  uint32_t name_idx;
+  uint64_t name_ptr;
   int64_t *starts;
   size_t count;
   size_t capacity;
@@ -2166,14 +2170,14 @@ typedef struct TracyExport {
   size_t zone_capacity;
   uint64_t child_vector_count;
 
-  TracyFrameSet frames;
+  TracyFrameSet *frames;
+  size_t frame_count;
+  size_t frame_capacity;
 
   TracyPlot *plots;
   size_t plot_count;
   size_t plot_capacity;
 
-  uint32_t frame_name_idx;
-  uint64_t frame_name_ptr;
   int64_t last_time;
 } TracyExport;
 
@@ -2336,10 +2340,38 @@ static int tracy_thread_add_root(TracyThread *thread, TracyZone *zone) {
   return LUA_OK;
 }
 
-static int tracy_frame_add(TracyExport *E, int64_t time) {
-  if (tracy_reserve_array(l_pcast(void **, &E->frames.starts), &E->frames.capacity, E->frames.count + 1, sizeof(int64_t)) != LUA_OK)
+static TracyFrameSet *tracy_export_get_frame_set(TracyExport *E, const char *name) {
+  size_t i;
+  const char *frame_name = CHROME_OPT_NAME(name, "Frame");
+
+  for (i = 0; i < E->frame_count; ++i) {
+    if (strcmp(E->frames[i].name, frame_name) == 0)
+      return &E->frames[i];
+  }
+
+  if (tracy_reserve_array(l_pcast(void **, &E->frames), &E->frame_capacity, E->frame_count + 1, sizeof(TracyFrameSet)) != LUA_OK)
+    return l_nullptr;
+
+  memset(&E->frames[E->frame_count], 0, sizeof(TracyFrameSet));
+  E->frames[E->frame_count].name = tracy_strdup_local(frame_name);
+  if (E->frames[E->frame_count].name == l_nullptr)
+    return l_nullptr;
+  if (tracy_export_add_string(E, frame_name, &E->frames[E->frame_count].name_idx, &E->frames[E->frame_count].name_ptr) != LUA_OK) {
+    free(E->frames[E->frame_count].name);
+    E->frames[E->frame_count].name = l_nullptr;
+    return l_nullptr;
+  }
+
+  return &E->frames[E->frame_count++];
+}
+
+static int tracy_frame_add(TracyExport *E, const char *name, int64_t time) {
+  TracyFrameSet *frames = tracy_export_get_frame_set(E, name);
+  if (frames == l_nullptr)
     return LMPROF_REPORT_FAILURE;
-  E->frames.starts[E->frames.count++] = time;
+  if (tracy_reserve_array(l_pcast(void **, &frames->starts), &frames->capacity, frames->count + 1, sizeof(int64_t)) != LUA_OK)
+    return LMPROF_REPORT_FAILURE;
+  frames->starts[frames->count++] = time;
   if (E->last_time < time)
     E->last_time = time;
   return LUA_OK;
@@ -2484,13 +2516,24 @@ static size_t tracy_lz4_literals(unsigned char *dst, const unsigned char *src, s
   return pos;
 }
 
+static size_t tracy_lz4_compress_block(unsigned char *dst, const unsigned char *src, size_t len) {
+  int compressed_size = 0;
+  if (len <= UINT32_MAX
+      && dmLZ4::CompressBuffer(src, l_cast(uint32_t, len), dst, &compressed_size) == dmLZ4::RESULT_OK
+      && compressed_size > 0
+      && l_cast(size_t, compressed_size) <= TRACY_FILE_COMPRESS_BOUND) {
+    return l_cast(size_t, compressed_size);
+  }
+  return tracy_lz4_literals(dst, src, len);
+}
+
 static int tracy_file_flush(TracyFileWriter *W) {
   unsigned char compressed[TRACY_FILE_COMPRESS_BOUND];
   uint32_t size;
   if (W->failed || W->offset == 0)
     return W->failed ? LMPROF_REPORT_FAILURE : LUA_OK;
 
-  size = l_cast(uint32_t, tracy_lz4_literals(compressed, W->buffer, W->offset));
+  size = l_cast(uint32_t, tracy_lz4_compress_block(compressed, W->buffer, W->offset));
   if (fwrite(&size, 1, sizeof(size), W->file) != sizeof(size)
       || fwrite(compressed, 1, size, W->file) != size) {
     W->failed = 1;
@@ -2627,6 +2670,36 @@ static int tracy_write_zero_zone_extra(TracyFileWriter *W) {
       ? LUA_OK : LMPROF_REPORT_FAILURE;
 }
 
+static uint64_t tracy_pseudo_tid(lua_Integer pid, lua_Integer tid) {
+  return (l_cast(uint64_t, l_cast(uint32_t, pid)) << 32) | l_cast(uint64_t, l_cast(uint32_t, tid));
+}
+
+static uint64_t tracy_event_tid(const TraceEvent *event) {
+  return tracy_pseudo_tid(event->call.proc.pid, event->call.proc.tid);
+}
+
+static uint64_t tracy_main_tid(const lmprof_State *st) {
+  return tracy_pseudo_tid(st->thread.mainproc.pid, st->thread.mainproc.tid);
+}
+
+static int64_t tracy_rebase_time_ns(uint64_t time_ns, uint64_t base_ns) {
+  return l_cast(int64_t, time_ns > base_ns ? time_ns - base_ns : 0);
+}
+
+static int tracy_export_set_chrome_thread_name(TracyExport *E, lua_Integer pid, lua_Integer tid, const char *name) {
+  char buffer[128];
+  const char *thread_name = CHROME_OPT_NAME(name, CHROME_META_TICK);
+  const uint64_t pseudo_tid = tracy_pseudo_tid(pid, tid);
+  const int len = snprintf(buffer, sizeof(buffer), "(PID %" PRIu64 " TID %" PRIu64 ") %s",
+      l_cast(uint64_t, l_cast(uint32_t, pid)),
+      l_cast(uint64_t, l_cast(uint32_t, tid)),
+      thread_name);
+  if (len < 0)
+    return LMPROF_REPORT_FAILURE;
+  buffer[sizeof(buffer) - 1] = '\0';
+  return tracy_export_set_thread_name(E, pseudo_tid, buffer);
+}
+
 static int tracy_write_capture(TracyFileWriter *W, TracyExport *E, lmprof_State *st, const char *file) {
   static const unsigned char file_header[8] = { 't', 'r', 'a', 'c', 'y', TRACY_FILE_MAJOR, TRACY_FILE_MINOR, TRACY_FILE_PATCH };
   const char *capture_name = CHROME_OPT_NAME(file, "lmprof.tracy");
@@ -2635,23 +2708,21 @@ static int tracy_write_capture(TracyFileWriter *W, TracyExport *E, lmprof_State 
   const uint64_t max64 = ~(uint64_t)0;
   size_t i;
 
-  if (E->frames.count == 0) {
-    if (tracy_frame_add(E, 0) != LUA_OK)
-      return LMPROF_REPORT_FAILURE;
-  }
-  if (E->frames.count == 1) {
-    const int64_t last = E->last_time > E->frames.starts[0] ? E->last_time : E->frames.starts[0] + 1;
-    if (tracy_frame_add(E, last) != LUA_OK)
+  if (E->frame_count == 0) {
+    if (tracy_frame_add(E, "Frame", 0) != LUA_OK
+        || tracy_frame_add(E, "Frame", 0) != LUA_OK)
       return LMPROF_REPORT_FAILURE;
   }
 
-  if (tracy_export_add_string(E, "Frame", &E->frame_name_idx, &E->frame_name_ptr) != LUA_OK)
-    return LMPROF_REPORT_FAILURE;
   for (i = 0; i < E->thread_count; ++i) {
     TracyThread *thread = &E->threads[i];
-    if (thread->name_ptr == 0
-        && tracy_export_set_thread_name(E, thread->tid, thread->tid == l_cast(uint64_t, st->thread.mainproc.tid) ? CHROME_NAME_MAIN : CHROME_META_TICK) != LUA_OK)
-      return LMPROF_REPORT_FAILURE;
+    if (thread->name_ptr == 0) {
+      const lua_Integer pid = l_cast(lua_Integer, thread->tid >> 32);
+      const lua_Integer tid = l_cast(lua_Integer, thread->tid & 0xffffffffu);
+      const char *name = thread->tid == tracy_main_tid(st) ? CHROME_NAME_CR_RENDERER : CHROME_META_TICK;
+      if (tracy_export_set_chrome_thread_name(E, pid, tid, name) != LUA_OK)
+        return LMPROF_REPORT_FAILURE;
+    }
   }
   if (tracy_build_thread_trees(E) != LUA_OK)
     return LMPROF_REPORT_FAILURE;
@@ -2686,16 +2757,19 @@ static int tracy_write_capture(TracyFileWriter *W, TracyExport *E, lmprof_State 
       || tracy_write_u32(W, 0) != LUA_OK)
     return LMPROF_REPORT_FAILURE;
 
-  /* Frame set. */
-  if (tracy_write_u64(W, 1) != LUA_OK
-      || tracy_write_u64(W, 0) != LUA_OK
-      || tracy_write_u8(W, 1) != LUA_OK
-      || tracy_write_u64(W, E->frames.count) != LUA_OK)
+  /* Frame sets. */
+  if (tracy_write_u64(W, E->frame_count) != LUA_OK)
     return LMPROF_REPORT_FAILURE;
-  {
+  for (i = 0; i < E->frame_count; ++i) {
+    TracyFrameSet *frames = &E->frames[i];
     int64_t ref = 0;
-    for (i = 0; i < E->frames.count; ++i) {
-      if (tracy_write_time_offset(W, &ref, E->frames.starts[i]) != LUA_OK
+    size_t j;
+    if (tracy_write_u64(W, frames->name_ptr) != LUA_OK
+        || tracy_write_u8(W, 1) != LUA_OK
+        || tracy_write_u64(W, frames->count) != LUA_OK)
+      return LMPROF_REPORT_FAILURE;
+    for (j = 0; j < frames->count; ++j) {
+      if (tracy_write_time_offset(W, &ref, frames->starts[j]) != LUA_OK
           || tracy_write_i32(W, -1) != LUA_OK)
         return LMPROF_REPORT_FAILURE;
     }
@@ -2711,9 +2785,7 @@ static int tracy_write_capture(TracyFileWriter *W, TracyExport *E, lmprof_State 
       return LMPROF_REPORT_FAILURE;
   }
 
-  if (tracy_write_u64(W, E->string_count + 1) != LUA_OK
-      || tracy_write_u64(W, 0) != LUA_OK
-      || tracy_write_u64(W, E->frame_name_ptr) != LUA_OK)
+  if (tracy_write_u64(W, E->string_count) != LUA_OK)
     return LMPROF_REPORT_FAILURE;
   for (i = 0; i < E->string_count; ++i) {
     if (tracy_write_u64(W, E->strings[i].ptr) != LUA_OK
@@ -2865,26 +2937,6 @@ static int tracy_write_capture(TracyFileWriter *W, TracyExport *E, lmprof_State 
       ? LUA_OK : LMPROF_REPORT_FAILURE;
 }
 
-static uint64_t tracy_event_tid(const TraceEvent *event) {
-  return l_cast(uint64_t, event->call.proc.tid);
-}
-
-static uint32_t tracy_event_line(const TraceEvent *event) {
-  const lmprof_FunctionInfo *info = event->data.event.info;
-  if (info == l_nullptr)
-    return 0;
-  if (info->currentline > 0)
-    return l_cast(uint32_t, info->currentline);
-  if (info->linedefined > 0)
-    return l_cast(uint32_t, info->linedefined);
-  return 0;
-}
-
-static const char *tracy_event_file(const TraceEvent *event) {
-  const lmprof_FunctionInfo *info = event->data.event.info;
-  return info == l_nullptr ? "" : CHROME_OPT_NAME(info->short_src, "");
-}
-
 static const char *tracy_routine_name(lua_State *L, lmprof_State *st, const TraceEvent *event) {
   const lua_Integer tid = event->call.proc.tid;
   const char *opt = tid == st->thread.mainproc.tid ? CHROME_NAME_MAIN : CHROME_META_TICK;
@@ -2900,6 +2952,7 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
   TraceEvent *routine_begin = l_nullptr;
   size_t counter = 0;
   size_t counterFrequency = TRACE_EVENT_COUNTER_FREQ;
+  uint64_t base_ns = 0;
   int result = LUA_OK;
 
   memset(&E, 0, sizeof(E));
@@ -2920,15 +2973,15 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
     }
   }
 
-  if (tracy_export_set_thread_name(&E, st->thread.mainproc.tid, CHROME_NAME_MAIN) != LUA_OK) {
+  if (tracy_export_set_chrome_thread_name(&E, st->thread.mainproc.pid, st->thread.mainproc.tid, CHROME_NAME_CR_RENDERER) != LUA_OK) {
     result = LMPROF_REPORT_FAILURE;
     goto done;
   }
 
   if (traceevent_find_bounds(st, list, &bounds)) {
-    const int64_t start = l_cast(int64_t, perfetto_adjusted_time_ns(st, bounds.start));
-    const int64_t end = l_cast(int64_t, perfetto_adjusted_time_ns(st, bounds.end));
-    if (tracy_export_add_zone(&E, l_cast(uint64_t, st->thread.mainproc.tid), CHROME_NAME_RUN_TASK, "", 0, start, end) == l_nullptr) {
+    const uint64_t end_ns = perfetto_adjusted_time_ns(st, bounds.end);
+    base_ns = perfetto_adjusted_time_ns(st, bounds.start);
+    if (tracy_export_add_zone(&E, tracy_main_tid(st), CHROME_NAME_RUN_TASK, "", 0, 0, tracy_rebase_time_ns(end_ns, base_ns)) == l_nullptr) {
       result = LMPROF_REPORT_FAILURE;
       goto done;
     }
@@ -2939,11 +2992,17 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
     for (i = 0; i < page->count; ++i) {
       TraceEvent *event = &page->event_array[i];
       const TraceEventType op = traceevent_report_op(event);
-      const int64_t time_ns = op_adjust(op) ? l_cast(int64_t, perfetto_time_ns(st, event->call.s.time)) : 0;
+      const int64_t time_ns = op_adjust(op) ? tracy_rebase_time_ns(perfetto_time_ns(st, event->call.s.time), base_ns) : 0;
 
       switch (op) {
         case BEGIN_FRAME:
-          if (tracy_frame_add(&E, time_ns) != LUA_OK) {
+          if (tracy_frame_add(&E, "BeginFrame", time_ns) != LUA_OK) {
+            result = LMPROF_REPORT_FAILURE;
+            goto done;
+          }
+          break;
+        case END_FRAME:
+          if (tracy_frame_add(&E, "DrawFrame", time_ns) != LUA_OK) {
             result = LMPROF_REPORT_FAILURE;
             goto done;
           }
@@ -2953,8 +3012,8 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
           break;
         case END_ROUTINE:
           if (routine_begin != l_nullptr) {
-            const int64_t start_ns = l_cast(int64_t, perfetto_time_ns(st, routine_begin->call.s.time));
-            const uint64_t tid = l_cast(uint64_t, st->thread.mainproc.tid);
+            const int64_t start_ns = tracy_rebase_time_ns(perfetto_time_ns(st, routine_begin->call.s.time), base_ns);
+            const uint64_t tid = tracy_main_tid(st);
             if (tracy_export_add_zone(&E, tid, tracy_routine_name(L, st, routine_begin), "", 0, start_ns, time_ns) == l_nullptr) {
               result = LMPROF_REPORT_FAILURE;
               goto done;
@@ -2964,8 +3023,8 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
           break;
         case ENTER_SCOPE:
           if (event->data.event.sibling != l_nullptr) {
-            const int64_t end_ns = l_cast(int64_t, perfetto_time_ns(st, event->data.event.sibling->call.s.time));
-            if (tracy_export_add_zone(&E, tracy_event_tid(event), CHROME_EVENT_NAME(event), tracy_event_file(event), tracy_event_line(event), time_ns, end_ns) == l_nullptr) {
+            const int64_t end_ns = tracy_rebase_time_ns(perfetto_time_ns(st, event->data.event.sibling->call.s.time), base_ns);
+            if (tracy_export_add_zone(&E, tracy_event_tid(event), CHROME_EVENT_NAME(event), "", 0, time_ns, end_ns) == l_nullptr) {
               result = LMPROF_REPORT_FAILURE;
               goto done;
             }
@@ -2973,7 +3032,7 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
           /* fall through */
         case EXIT_SCOPE:
           if (BITFIELD_TEST(st->mode, LMPROF_MODE_MEMORY) && (counterFrequency == 1 || ((++counter) % counterFrequency) == 0)) {
-            if (tracy_plot_add_point(&E, "LuaMemory", TRACY_PLOT_FORMAT_MEMORY, time_ns, l_cast(double, unit_allocated(&event->call.s))) != LUA_OK) {
+            if (tracy_plot_add_point(&E, "LuaMemory", TRACY_PLOT_FORMAT_NUMBER, time_ns, l_cast(double, unit_allocated(&event->call.s))) != LUA_OK) {
               result = LMPROF_REPORT_FAILURE;
               goto done;
             }
@@ -2981,13 +3040,12 @@ static int tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
           }
           break;
         case THREAD:
-          if (tracy_export_set_thread_name(&E, tracy_event_tid(event), CHROME_OPT_NAME(event->data.process.name, CHROME_META_TICK)) != LUA_OK) {
+          if (tracy_export_set_chrome_thread_name(&E, event->call.proc.pid, event->call.proc.tid, CHROME_OPT_NAME(event->data.process.name, CHROME_META_TICK)) != LUA_OK) {
             result = LMPROF_REPORT_FAILURE;
             goto done;
           }
           break;
         case PROCESS:
-        case END_FRAME:
         case LINE_SCOPE:
         case SAMPLE_EVENT:
         case IGNORE_SCOPE:
@@ -3021,7 +3079,11 @@ done:
       free(E.zones[i]);
     }
     free(E.zones);
-    free(E.frames.starts);
+    for (i = 0; i < E.frame_count; ++i) {
+      free(E.frames[i].name);
+      free(E.frames[i].starts);
+    }
+    free(E.frames);
     for (i = 0; i < E.plot_count; ++i) {
       free(E.plots[i].name);
       free(E.plots[i].points);
