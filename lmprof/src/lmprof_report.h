@@ -168,7 +168,7 @@ typedef struct lmprof_Report {
     struct {
       FILE *file;
       int delim; /* Requires delimitation on next write */
-      int binary; /* See lmprof_TraceFileFormat in lmprof_report.c */
+      int binary; /* See private lmprof_TraceFileFormat */
       const char *path; /* Original output path */
       const char *indent; /* Current indentation string (often a function of some nested depth) */
     } f;
