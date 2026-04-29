@@ -63,6 +63,7 @@ typedef struct TracyZone {
   int64_t end;
   size_t order;
   uint32_t extra;
+  int valid;
   struct TracyZone **children;
   size_t child_count;
   size_t child_capacity;
@@ -121,6 +122,7 @@ typedef struct TracyExport {
   TracyZone **zones;
   size_t zone_count;
   size_t zone_capacity;
+  size_t valid_zone_count;
   uint64_t child_vector_count;
 
   TracyFrameSet *frames;
@@ -242,13 +244,24 @@ static TracySourceLocation *tracy_export_get_source(TracyExport *E, const char *
   return &E->sources[E->source_count++];
 }
 
+static int tracy_zone_interval_valid(int64_t start, int64_t end) {
+  return start >= 0 && end > start;
+}
+
+static TracySourceLocation *tracy_export_zone_source(TracyExport *E, const TracyZone *zone) {
+  const int source_index = -l_cast(int, zone->srcloc) - 1;
+  if (zone->srcloc >= 0 || source_index < 0 || l_cast(size_t, source_index) >= E->source_count)
+    return l_nullptr;
+  return &E->sources[source_index];
+}
+
 static TracyZone *tracy_export_add_zone(TracyExport *E, uint64_t tid, const char *name, const char *file, uint32_t line, int64_t start, int64_t end) {
   TracySourceLocation *source;
   TracyZone *zone;
   TracyThread *thread;
 
-  if (end < start)
-    end = start;
+  if (!tracy_zone_interval_valid(start, end))
+    return l_nullptr;
 
   source = tracy_export_get_source(E, name, file, line);
   if (source == l_nullptr)
@@ -271,12 +284,36 @@ static TracyZone *tracy_export_add_zone(TracyExport *E, uint64_t tid, const char
   zone->end = end;
   zone->order = E->zone_count;
   zone->extra = 0;
+  zone->valid = 1;
   E->zones[E->zone_count++] = zone;
+  E->valid_zone_count++;
   source->count++;
   thread->zone_count++;
   if (E->last_time < end)
     E->last_time = end;
   return zone;
+}
+
+static int tracy_export_add_scope(TracyExport *E, uint64_t tid, const char *name, const char *file, uint32_t line, int64_t start, int64_t end) {
+  if (!tracy_zone_interval_valid(start, end))
+    return LUA_OK;
+  return tracy_export_add_zone(E, tid, name, file, line, start, end) != l_nullptr ? LUA_OK : LMPROF_REPORT_FAILURE;
+}
+
+static void tracy_export_drop_zone(TracyExport *E, TracyThread *thread, TracyZone *zone) {
+  TracySourceLocation *source;
+  if (!zone->valid)
+    return;
+
+  zone->valid = 0;
+  if (E->valid_zone_count > 0)
+    E->valid_zone_count--;
+  if (thread->zone_count > 0)
+    thread->zone_count--;
+
+  source = tracy_export_zone_source(E, zone);
+  if (source != l_nullptr && source->count > 0)
+    source->count--;
 }
 
 static int tracy_zone_add_child(TracyZone *parent, TracyZone *child) {
@@ -398,7 +435,7 @@ static int tracy_build_thread_trees(TracyExport *E) {
 
     for (i = 0; i < E->zone_count; ++i) {
       TracyZone *zone = E->zones[i];
-      if (zone->tid != thread->tid)
+      if (!zone->valid || zone->tid != thread->tid)
         continue;
       if (tracy_reserve_array(l_pcast(void **, &thread_zones), &capacity, count + 1, sizeof(TracyZone *)) != LUA_OK) {
         free(thread_zones);
@@ -416,8 +453,17 @@ static int tracy_build_thread_trees(TracyExport *E) {
       while (stack_count > 0 && stack[stack_count - 1]->end <= zone->start)
         stack_count--;
 
-      if (stack_count > 0 && zone->end <= stack[stack_count - 1]->end) {
+      if (!tracy_zone_interval_valid(zone->start, zone->end)) {
+        tracy_export_drop_zone(E, thread, zone);
+        continue;
+      }
+      else if (stack_count > 0) {
         TracyZone *parent = stack[stack_count - 1];
+        if (zone->end > parent->end) {
+          tracy_export_drop_zone(E, thread, zone);
+          continue;
+        }
+
         if (parent->child_count == 0)
           E->child_vector_count++;
         if (tracy_zone_add_child(parent, zone) != LUA_OK) {
@@ -443,6 +489,35 @@ static int tracy_build_thread_trees(TracyExport *E) {
     free(stack);
   }
   return LUA_OK;
+}
+
+static void tracy_export_update_last_time(TracyExport *E) {
+  size_t i;
+  E->last_time = 0;
+
+  for (i = 0; i < E->zone_count; ++i) {
+    TracyZone *zone = E->zones[i];
+    if (zone->valid && E->last_time < zone->end)
+      E->last_time = zone->end;
+  }
+
+  for (i = 0; i < E->frame_count; ++i) {
+    TracyFrameSet *frames = &E->frames[i];
+    size_t j;
+    for (j = 0; j < frames->count; ++j) {
+      if (E->last_time < frames->starts[j])
+        E->last_time = frames->starts[j];
+    }
+  }
+
+  for (i = 0; i < E->plot_count; ++i) {
+    TracyPlot *plot = &E->plots[i];
+    size_t j;
+    for (j = 0; j < plot->count; ++j) {
+      if (E->last_time < plot->points[j].time)
+        E->last_time = plot->points[j].time;
+    }
+  }
 }
 
 static size_t tracy_lz4_literals(unsigned char *dst, const unsigned char *src, size_t len) {
@@ -635,8 +710,36 @@ static uint64_t tracy_main_tid(const lmprof_State *st) {
   return tracy_pseudo_tid(st->thread.mainproc.pid, st->thread.mainproc.tid);
 }
 
-static int64_t tracy_rebase_time_ns(uint64_t time_ns, uint64_t base_ns) {
-  return l_cast(int64_t, time_ns > base_ns ? time_ns - base_ns : 0);
+static int tracy_adjusted_time_ns(const lmprof_State *st, lu_time time, uint64_t *result) {
+  const uint64_t adjusted = l_cast(uint64_t, time);
+#if LUA_32BITS
+  if (adjusted > UINT64_MAX / 1000u)
+    return 0;
+  *result = adjusted * 1000u;
+#else
+  if (BITFIELD_TEST(st->conf, LMPROF_OPT_CLOCK_MICRO)) {
+    if (adjusted > UINT64_MAX / 1000u)
+      return 0;
+    *result = adjusted * 1000u;
+  }
+  else {
+    *result = adjusted;
+  }
+#endif
+  return 1;
+}
+
+static int tracy_event_time_ns(const lmprof_State *st, lu_time time, uint64_t *result) {
+  return tracy_adjusted_time_ns(st, LMPROF_TIME_ADJ(time, st->conf), result);
+}
+
+static int tracy_rebase_time_ns(uint64_t time_ns, uint64_t base_ns, int64_t *result) {
+  const uint64_t delta = time_ns > base_ns ? time_ns - base_ns : 0;
+  if (delta > l_cast(uint64_t, INT64_MAX))
+    return 0;
+
+  *result = l_cast(int64_t, delta);
+  return 1;
 }
 
 static int tracy_export_set_chrome_thread_name(TracyExport *E, lua_Integer pid, lua_Integer tid, const char *name) {
@@ -679,6 +782,7 @@ static int tracy_write_capture(TracyFileWriter *W, TracyExport *E, lmprof_State 
   }
   if (tracy_build_thread_trees(E) != LUA_OK)
     return LMPROF_REPORT_FAILURE;
+  tracy_export_update_last_time(E);
 
   if (tracy_file_write(W, file_header, sizeof(file_header)) != LUA_OK
       || tracy_write_u64(W, 1) != LUA_OK
@@ -799,7 +903,7 @@ static int tracy_write_capture(TracyFileWriter *W, TracyExport *E, lmprof_State 
     return LMPROF_REPORT_FAILURE;
 
   /* CPU zones. */
-  if (tracy_write_u64(W, E->zone_count) != LUA_OK
+  if (tracy_write_u64(W, E->valid_zone_count) != LUA_OK
       || tracy_write_u64(W, E->child_vector_count) != LUA_OK
       || tracy_write_u64(W, E->thread_count) != LUA_OK)
     return LMPROF_REPORT_FAILURE;
@@ -937,9 +1041,12 @@ int lmprof_tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
   }
 
   if (lmprof_traceevent_find_bounds(st, list, &bounds)) {
-    const uint64_t end_ns = lmprof_traceevent_adjusted_time_ns(st, bounds.end);
-    base_ns = lmprof_traceevent_adjusted_time_ns(st, bounds.start);
-    if (tracy_export_add_zone(&E, tracy_main_tid(st), CHROME_NAME_RUN_TASK, "", 0, 0, tracy_rebase_time_ns(end_ns, base_ns)) == l_nullptr) {
+    uint64_t end_ns = 0;
+    int64_t run_task_end = 0;
+    if (tracy_adjusted_time_ns(st, bounds.start, &base_ns)
+        && tracy_adjusted_time_ns(st, bounds.end, &end_ns)
+        && tracy_rebase_time_ns(end_ns, base_ns, &run_task_end)
+        && tracy_export_add_scope(&E, tracy_main_tid(st), CHROME_NAME_RUN_TASK, "", 0, 0, run_task_end) != LUA_OK) {
       result = LMPROF_REPORT_FAILURE;
       goto done;
     }
@@ -950,7 +1057,16 @@ int lmprof_tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
     for (i = 0; i < page->count; ++i) {
       TraceEvent *event = &page->event_array[i];
       const TraceEventType op = lmprof_traceevent_report_op(event);
-      const int64_t time_ns = op_adjust(op) ? tracy_rebase_time_ns(lmprof_traceevent_time_ns(st, event->call.s.time), base_ns) : 0;
+      int64_t time_ns = 0;
+      if (op_adjust(op)) {
+        uint64_t event_time_ns = 0;
+        if (!tracy_event_time_ns(st, event->call.s.time, &event_time_ns)
+            || !tracy_rebase_time_ns(event_time_ns, base_ns, &time_ns)) {
+          if (op_routine(op))
+            routine_begin = l_nullptr;
+          continue;
+        }
+      }
 
       switch (op) {
         case BEGIN_FRAME:
@@ -970,9 +1086,12 @@ int lmprof_tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
           break;
         case END_ROUTINE:
           if (routine_begin != l_nullptr) {
-            const int64_t start_ns = tracy_rebase_time_ns(lmprof_traceevent_time_ns(st, routine_begin->call.s.time), base_ns);
+            uint64_t routine_start_time_ns = 0;
+            int64_t start_ns = 0;
             const uint64_t tid = tracy_main_tid(st);
-            if (tracy_export_add_zone(&E, tid, tracy_routine_name(L, st, routine_begin), "", 0, start_ns, time_ns) == l_nullptr) {
+            if (tracy_event_time_ns(st, routine_begin->call.s.time, &routine_start_time_ns)
+                && tracy_rebase_time_ns(routine_start_time_ns, base_ns, &start_ns)
+                && tracy_export_add_scope(&E, tid, tracy_routine_name(L, st, routine_begin), "", 0, start_ns, time_ns) != LUA_OK) {
               result = LMPROF_REPORT_FAILURE;
               goto done;
             }
@@ -981,8 +1100,11 @@ int lmprof_tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
           break;
         case ENTER_SCOPE:
           if (event->data.event.sibling != l_nullptr) {
-            const int64_t end_ns = tracy_rebase_time_ns(lmprof_traceevent_time_ns(st, event->data.event.sibling->call.s.time), base_ns);
-            if (tracy_export_add_zone(&E, tracy_event_tid(event), CHROME_EVENT_NAME(event), "", 0, time_ns, end_ns) == l_nullptr) {
+            uint64_t sibling_time_ns = 0;
+            int64_t end_ns = 0;
+            if (tracy_event_time_ns(st, event->data.event.sibling->call.s.time, &sibling_time_ns)
+                && tracy_rebase_time_ns(sibling_time_ns, base_ns, &end_ns)
+                && tracy_export_add_scope(&E, tracy_event_tid(event), CHROME_EVENT_NAME(event), "", 0, time_ns, end_ns) != LUA_OK) {
               result = LMPROF_REPORT_FAILURE;
               goto done;
             }
