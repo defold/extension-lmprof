@@ -417,6 +417,8 @@ LUA_API TraceEventTimeline *timeline_new(lmprof_Alloc *alloc, size_t pageLimit) 
       list->pageLimit = pageLimit / TRACE_EVENT_PAGE_SIZE;
       list->frameCount = 1;
       list->head = list->curr = header;
+      list->adjusted = 0;
+      list->compressed = 0;
       return list;
     }
     else { /* Could not allocate page header */
@@ -638,6 +640,9 @@ LUA_API void timeline_adjust(TraceEventTimeline *list) {
 #endif
 
   TraceEventPage *page = l_nullptr;
+  if (list->adjusted)
+    return;
+
   for (page = list->head; page != l_nullptr; page = page->next) {
     size_t i;
     for (i = 0; i < page->count; ++i) {
@@ -673,6 +678,8 @@ LUA_API void timeline_adjust(TraceEventTimeline *list) {
       }
     }
   }
+
+  list->adjusted = 1;
 }
 
 /* Simplification */
@@ -682,6 +689,9 @@ LUA_API void timeline_adjust(TraceEventTimeline *list) {
 
 LUA_API int timeline_compress(TraceEventTimeline *list, TraceEventCompressOpts opts) {
   TraceEventPage *page = list->head;
+  if (list->compressed)
+    return TRACE_EVENT_OK;
+
   for (page = list->head; page != l_nullptr; page = page->next) {
     size_t i;
     for (i = 0; i < page->count; ++i) {
@@ -709,6 +719,7 @@ LUA_API int timeline_compress(TraceEventTimeline *list, TraceEventCompressOpts o
     }
   }
 
+  list->compressed = 1;
   return TRACE_EVENT_OK;
 }
 

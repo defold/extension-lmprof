@@ -6,7 +6,7 @@
         --memory --micro
 
     lua.exe script.lua --input=codegen.lua --args="inp/natives_global.lua lua" \
-        --output=out.json --memory --trace --compress=1000 --memory --counter_freq=256
+        --output=out.perfetto-trace --memory --trace --compress=1000 --memory --counter_freq=256
 
 @LICENSE
     See Copyright Notice in lmprof_lib.h
@@ -16,7 +16,7 @@ lmprof = lmprof--require('lmprof') or lmprof -- @NOTE: LUA_PATH
 --[[ Default arguments --]]
 function PrintUsage(errorMessage)
     local usageMessage = [[
-script [--input] [--output] [--format] [--path] [--args] [-h | --help]
+script [--input] [--output|--outputs] [--format] [--path] [--args] [-h | --help]
   [-t | --time] [-m | --memory] [-e | --trace] [-l | --lines] [-s | --sample] [--single_thread]
   [--micro] [--compress_graph] [--load_stack] [--mismatch] [--line_freq] [--ignore_yield] [--gc_count] [-g | --disable_gc] [-i | --instructions]
   [-p | --process] [-f | --draw_frame] [-c | --compress] [--split] [--tracing] [--page_limit] [--name] [--url]
@@ -24,7 +24,8 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
 
 [INPUT]
   --input: input script file
-  --output: optional output location (default: STDOUT)
+  --output: optional output location (default: STDOUT). Trace file output is Perfetto binary unless the path ends in .json or .tracy.
+  --outputs: comma-separated output locations, written from the same captured profile.
   --format: format/reduce an already generated profiler output.
   --path: Additional package.searchpath string for module searching ('export LUA_PATH' alternative).
   --args: Command line arguments to forward to the input script file.
@@ -34,7 +35,7 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
   [Instrumenting]:
     --time: Enable 'base' timing.
     --memory Enable 'base' Lua allocator tracking.
-    --trace: Enable DevTools timeline profiling.
+    --trace: Enable timeline profiling. File output writes Perfetto binary by default.
     --lines: Enable line frequency (or line event) profiling.
 
   [Sampling]:
@@ -58,8 +59,8 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
     --process=value: Synthetic process ID.
     --compress=time: Suppress Trace Event records with durations less than 'time'
     --draw_frame: Enable BeginFrame support for trace events (i.e., each 'frame' corresponds to execution of a single coroutine between resume/yields)
-    --split: Output a unique thread ids for each thread in the chromium output; Otherwise, all events use the main thread.
-    --tracing: Output a format compatible with chrome://tracing/.
+    --split: Output a unique thread ids for each thread in the trace output; Otherwise, all events use the main thread.
+    --tracing: With a .json trace output, write a chrome://tracing compatible wrapper.
     --page_limit: TraceEvent buffer size in bytes
     --counter_freq: Frequency of 'UpdateCounters' event generation.
     --name: Synthetic 'TracingStartedInBrowser' Name.
@@ -69,6 +70,8 @@ script [--input] [--output] [--format] [--path] [--args] [-h | --help]
     --callgrind: Callgrind compatible layout
     --pepper: Pepperfish style layout (optional, default: false)
     --json: Write 'base' profiling output as formatted JSON.
+    Trace file output uses Perfetto binary unless --output ends in .json or .tracy.
+    Use --outputs=out.perfetto-trace,out.json,out.tracy to write multiple trace formats from one profile.
     --sort: result sorting algorithm [count, size, time] (optional, default: count)
     --csv: Comma-separated flat output
     --show_lines: Show line frequencies in generated output.
@@ -139,6 +142,32 @@ function ParseArguments(arg, optionString)
     return options
 end
 
+local function SplitOutputs(value)
+    if value == nil then
+        return nil
+    end
+
+    local outputs = {}
+    for path in value:gmatch("[^,]+") do
+        path = path:match("^%s*(.-)%s*$")
+        if path ~= "" then
+            outputs[#outputs + 1] = path
+        end
+    end
+
+    if #outputs == 0 then
+        error("--outputs requires at least one output path")
+    end
+    return outputs
+end
+
+local function OutputLabel(output)
+    if type(output) == "table" then
+        return table.concat(output, ", ")
+    end
+    return output
+end
+
 ---------------------------------------
 -------------- Execution --------------
 ---------------------------------------
@@ -152,13 +181,18 @@ end
 local options = ParseArguments(arg, "")
 local input = options:String("input", "", nil)
 local output = options:String("output", "", nil)
+local outputs = SplitOutputs(options:String("outputs", "", nil))
 if options:Bool("help", "h", false) then
     PrintUsage()
     return
 elseif not input then
     PrintUsage("Input Required")
     return
+elseif output and outputs then
+    PrintUsage("Use either --output or --outputs, not both")
+    return
 end
+output = outputs or output
 
 --[[ MODES: The profiling library will sanitize conflicting mode parameters. ]]
 local time_mode = (options:Bool("time", "t", false) and "time") or nil
@@ -231,10 +265,10 @@ end
 
 arg = prevArgs
 if output then
-    if result ~= nil then
-        print(("Written To: %s"):format(output))
+    if result then
+        print(("Written To: %s"):format(OutputLabel(output)))
     else
-        error(("Failure writing to: %s"):format(output))
+        error(("Failure writing to: %s"):format(OutputLabel(output)))
     end
 elseif options:Bool("json", "j", false) or trace_mode then
     if options:Bool("output_string", "", false) then
