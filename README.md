@@ -19,25 +19,26 @@ Specify properties:
 
 ## Viewer
 
-* Open Google Chrome
-* Open DevTools -> `Performance`
-* turn on the `Memory` checkbox:
+lmprof saves Perfetto binary traces by default. The helper script writes `mem.perfetto-trace` unless you pass a custom filename. Use a filename ending in `.tracy` to write a native Tracy capture instead.
 
-<img width="1125" alt="image" src="https://user-images.githubusercontent.com/2209596/222743207-e987d7df-020e-43da-8bf3-d2c49e6b84ce.png">
+To compare exporters from the same profiling session, pass multiple filenames:
 
-* Click `Load profile...` and choose your `json`
+```lua
+lmprof_helper.stop({ "mem.perfetto-trace", "mem.json", "mem.tracy" })
+```
 
-<img width="741" alt="image" src="https://user-images.githubusercontent.com/2209596/222743828-cc3d8b80-a64c-4e35-ac5d-2bc8a1d4f2ec.png">
+The command-line helper also accepts multiple outputs:
 
-<img width="1123" alt="image" src="https://user-images.githubusercontent.com/2209596/222744110-456458bc-d644-4972-8831-a4c35133bda4.png">
+```sh
+lua lmprof/scripts/script.lua --input=example.lua --trace --memory --outputs=mem.perfetto-trace,mem.json,mem.tracy
+```
 
-### Chrome Performance notes
+* Open [ui.perfetto.dev](https://ui.perfetto.dev)
+* Choose `Open trace file`
+* Load the generated `.perfetto-trace` file
 
-Recent Chrome versions filter unknown event names in browser-shaped traces. lmprof exports a generic trace so custom Lua scopes are visible in the Performance flame chart.
+After loading a trace, expand the main thread track and zoom into the recorded range. The top-level task is shown as `RunTask`; lmprof scopes are nested under it. Typical scopes include:
 
-After loading a trace, expand the main thread track and zoom into the recorded range. The top-level task may be shown as `RunTask` or `Long Task`; lmprof scopes are nested under it. Typical scopes include:
-
-* `Main`
 * `update (lmprof/scripts/lmprof_helper.lua:49)`
 * `get_state [C]`
 * `begin_frame [C]`
@@ -51,13 +52,23 @@ After loading a trace, expand the main thread track and zoom into the recorded r
 * `disable_state [C]`
 * `draw [C]`
 
-Many scopes are very short, often microseconds, so they may not show labels until you zoom in. Use the Performance panel search to find a scope name such as `draw [C]` or `update`.
+Many scopes are very short, often microseconds, so they may not show labels until you zoom in. Use search to find a scope name such as `draw [C]` or `update`.
 
-When memory profiling is enabled, Chrome also shows `UpdateCounters` events and the memory graph. Seeing only `UpdateCounters` and `Long Task` usually means the trace was exported as a browser trace instead of a generic trace, or the view is zoomed out too far.
+When memory profiling is enabled, the trace includes an `UpdateCounters LuaMemory` counter track.
 
-Also, use [stat.py](https://github.com/defold/extension-lmprof/blob/master/stat.py) to see calls statistics.
+### Tracy output
+
+If you prefer the Tracy profiler, pass an output filename ending in `.tracy`. The native capture includes lmprof CPU zones, frame markers, thread names, and the `LuaMemory` plot when memory profiling is enabled.
+
+### JSON output
+
+If you need Chrome Trace Event JSON for older tools, pass an output filename ending in `.json`. JSON traces can be opened in Chrome DevTools `Performance` or processed by [stat.py](https://github.com/defold/extension-lmprof/blob/master/stat.py).
 
 >stat.py my.json
+
+Perfetto's `traceconv` converts Perfetto protobuf traces to Chrome JSON, but it does not convert Chrome JSON back to a TrackEvent protobuf trace. If you need binary Perfetto output for comparison, write `.perfetto-trace` and `.json` from the same lmprof run.
+
+Tracy can import Chrome Trace JSON, but the imported capture is an approximation of the native `.tracy` writer. For the closest Tracy view, write `.tracy` directly from the same profiling session.
 
 ---
 If you have any issues, questions or suggestions please [create an issue](https://github.com/defold/extension-lmprof/issues)

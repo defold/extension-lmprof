@@ -1,29 +1,30 @@
 local M = {}
 
-function M.stop(filename, path, remove_c_calls)
-    path = path and path or ""
-    filename = filename and filename or "mem.json"
-    local fullpath = path..filename
-    if not _G.profilerlmprof:stop(fullpath) then
-        error("Failure!")
-    end
-    print("Result of profiling has been saved on disk: "..fullpath)
+local DEFAULT_OUTPUT = "mem.perfetto-trace"
 
-    if remove_c_calls then
-        local report_postprocess = require("lmprof.scripts.report_postprocess")
-        filename = "no_c_calls_"..filename
-        report_postprocess.filter_out_lines_with(fullpath, filename, {
-            -- "%? %[C%]", -- remove "? [C]"
-            -- "%(for generator%) %[C%]", -- remove "(for generator) [C]"
-            -- "self %[C%]" -- remove "self [C]"
-            "%[C%]" -- remove all "[C]" callse
-        })
+local function output_paths(filename, path)
+    if filename == nil and path == nil then
+        return nil
     end
+
+    filename = filename or DEFAULT_OUTPUT
+    path = path and path or ""
+    if type(filename) == "table" then
+        local outputs = {}
+        for i, name in ipairs(filename) do
+            outputs[i] = path..name
+        end
+        return outputs
+    end
+    return path..filename
+end
+
+function M.stop(filename, path)
+    _G.profilerlmprof:stop_to_files(output_paths(filename, path))
 end
 
 function M.start()
     if _G.profilerlmprof then
-        print("Start record!")
         _G.profilerlmprof:start()
         _G.profilerlmprof:begin_frame()
         return true

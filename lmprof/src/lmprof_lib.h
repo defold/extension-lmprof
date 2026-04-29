@@ -62,7 +62,7 @@ LUALIB_API int lmprof_create(lua_State *L);
 **  "instrument" - [GRAPH] Measurements between successive lua_Hook calls and
 **      track the relationships between functions.
 **
-**  "trace" - [TRACE] Generate events compatible with DevTools
+**  "trace" - [TRACE] Generate events compatible with Perfetto/DevTools
 **
 **  "single_thread" - Single thread profiling. Ignore all threads except the one
 **    that invoked 'start'.
@@ -106,14 +106,22 @@ LUALIB_API int lmprof_start(lua_State *L);
 **  lmprof_report.h contains the specifications for the different "result"
 **  structures depending on the profile mode.
 **
-**  output_path - a file-path string where the formatted results are written.
-**    For 'graph' profiling, the generated output is a Lua compatible table that
-**    can be loaded with 'require' or 'dofile'. Meanwhile, 'trace' profiling
-**    will generate a JSON file.
+**  output_path - a file-path string, or an array of file-path strings, where
+**    the formatted results are written. For 'graph' profiling, the generated
+**    output is a Lua compatible table that can be loaded with 'require' or
+**    'dofile'. Meanwhile, 'trace' profiling writes Perfetto binary traces by
+**    default. Use a ".json" output path for Chrome Trace Event JSON.
 **
 ** @NOTE: output_path requires LMPROF_FILE_API to be enabled (see 'has_io').
 */
 LUALIB_API int lmprof_stop(lua_State *L);
+
+/*
+** stop_to_files([output_path]): Stop the profiler singleton and write through
+**  the native writer. If no output_path is supplied, the extension's native
+**  default output file is used.
+*/
+LUALIB_API int lmprof_stop_to_files(lua_State *L);
 
 /* quit(): Preempt any active profiler state without reporting its results. */
 LUALIB_API int lmprof_quit(lua_State *L);
@@ -125,10 +133,10 @@ LUALIB_API int lmprof_quit(lua_State *L);
 ** Placing the result of the profiling (see lmprof_stop) onto the stack. Note,
 ** all trailing arguments correspond to its mode (see lmprof_start).
 **
-**  output_path - Optional filepath to write formatted results, see 'stop'. All
-**    other arguments correspond to its mode. This function require an explicit
-**    'nil' output_path parameter to denote the result is to be returned as a
-**    Lua object.
+**  output_path - Optional filepath, or array of filepaths, to write formatted
+**    results, see 'stop'. All other arguments correspond to its mode. This
+**    function require an explicit 'nil' output_path parameter to denote the
+**    result is to be returned as a Lua object.
 **
 ** @NOTE: output_path requires LMPROF_FILE_API to be enabled (see 'has_io').
 */
@@ -199,10 +207,10 @@ LUALIB_API int lmprof_profile_function(lua_State *L);
 **    'draw_frame' - Enable BeginFrame support for trace events, i.e., each
 **      'frame' corresponds to length of a coroutines execution; the time
 **      between successive resume/yield calls.
-**    'split' - Output a unique thread ids for each thread in the chromium
+**    'split' - Output a unique thread ids for each thread in the trace
 **      output; Otherwise, all events use the main thread and stack elements are
 **      artificially pushed/popped when the coroutine resume/yields.
-**    'tracing' - Output a format compatible with chrome://tracing/.
+**    'tracing' - For ".json" trace outputs, use the chrome://tracing wrapper.
 **
 **  Trace Event Options: [INTEGER]
 **    'process' - Synthetic Trace Event process ID.
@@ -336,4 +344,3 @@ LUALIB_API int lchrome_trace_event_endframe(lua_State *L);
 ******************************************************************************/
 
 #endif
-

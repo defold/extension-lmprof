@@ -1,6 +1,7 @@
 go.property("toggle_key_for_record", hash("enter action name"))
 go.property("record_time", 0)
 go.property("exit_when_finish_profiling", false)
+go.property("write_all_formats", false)
 
 local lmprof_helper = require("lmprof.scripts.lmprof_helper")
 
@@ -22,7 +23,11 @@ function on_input(self, action_id, action)
             self.started = lmprof_helper.start()
             if self.record_time > 0 then
                 self.timer = timer.delay(self.record_time, false, function()
-                    lmprof_helper.stop()
+                    if self.write_all_formats then
+                        lmprof_helper.stop({ "mem.perfetto-trace", "mem.json", "mem.tracy" })
+                    else
+                        lmprof_helper.stop()
+                    end
                     if self.exit_when_finish_profiling then
                         sys.exit(0)
                     end

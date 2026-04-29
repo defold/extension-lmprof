@@ -127,13 +127,13 @@
 **  [NUMBER]:
 **    pageusage - percent usage of the trace event list.
 **
-** RECORDS: The layout will not be detailed here, however, it is compatible with
-**  the Chrome DevTools (timline) spec:
-**    https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview
-**  and when the table is json encoded, can be loaded into
-**    https://github.com/ChromeDevTools/devtools-frontend.
-**  Note, that the generated output uses some deprecated features and will
-**  require change in the future and there are still many @TODO's remaining.
+** RECORDS: Table and string output use a Chrome Trace Event compatible layout.
+**  File output uses Perfetto TrackEvent protobuf by default, falls back to
+**  Chrome Trace Event JSON when the requested output path ends in ".json", and
+**  writes Tracy native captures when the output path ends in ".tracy". Passing
+**  an array of output paths writes each requested format from the same timeline.
+**  Perfetto traces can be loaded into:
+**    https://ui.perfetto.dev
 */
 
 typedef enum lmprof_ReportType {
@@ -168,6 +168,8 @@ typedef struct lmprof_Report {
     struct {
       FILE *file;
       int delim; /* Requires delimitation on next write */
+      int binary; /* See private lmprof_TraceFileFormat */
+      const char *path; /* Original output path */
       const char *indent; /* Current indentation string (often a function of some nested depth) */
     } f;
     struct {
@@ -180,6 +182,12 @@ typedef struct lmprof_Report {
 
 /* Initialize LMPROF_IO_METATABLE */
 LUA_API void lmprof_report_initialize(lua_State *L);
+
+/* Return non-zero when a file report should be opened in binary mode. */
+LUA_API int lmprof_report_file_binary(lmprof_State *st, const char *file);
+
+/* Write a file report into an already-open file stream. */
+LUA_API int lmprof_report_file(lua_State *L, lmprof_State *st, FILE *file, const char *path);
 
 /*
 ** Generate a 'report' for the given profiler state, returning the type of the

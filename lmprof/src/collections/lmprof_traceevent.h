@@ -106,6 +106,8 @@ typedef struct TraceEventTimeline {
   size_t pageLimit; /* Maximum number of allocated pages */
   size_t frameCount; /* Number of beginframe calls */
   lu_time baseTime; /* Base time subtracted from all TraceEvent instances */
+  int adjusted; /* Timeline timestamps have been normalized for reporting */
+  int compressed; /* Short/ignored events have been marked for reporting */
   struct TraceEventPage *head;
   struct TraceEventPage *curr;
 } TraceEventTimeline;
