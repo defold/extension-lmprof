@@ -926,7 +926,12 @@ int lmprof_tracy_traceevent_report(lua_State *L, lmprof_Report *R, TraceEventTim
     }
   }
 
-  if (tracy_export_set_chrome_thread_name(&E, st->thread.mainproc.pid, st->thread.mainproc.tid, CHROME_NAME_CR_RENDERER) != LUA_OK) {
+  /*
+  ** Tracy's Chrome importer sees browser-thread frame messages before the
+  ** renderer CPU zone thread is saved, so the renderer compresses to ordinal 2.
+  */
+  if (tracy_export_set_chrome_thread_name(&E, st->thread.mainproc.pid, LMPROF_THREAD_BROWSER, CHROME_NAME_CR_BROWSER) != LUA_OK
+      || tracy_export_set_chrome_thread_name(&E, st->thread.mainproc.pid, st->thread.mainproc.tid, CHROME_NAME_CR_RENDERER) != LUA_OK) {
     result = LMPROF_REPORT_FAILURE;
     goto done;
   }
@@ -1046,4 +1051,3 @@ done:
 
   return result;
 }
-
